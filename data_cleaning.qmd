@@ -1,0 +1,303 @@
+---
+title: "Movie Profitability Prediction"
+format:
+  html:
+    code-fold: true
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+jupyter:
+  kernelspec:
+    name: venvml
+    display_name: Python (venvML)
+    language: python
+---
+
+# 2. Data Preparation and Cleaning
+
+This section documents the data preparation pipeline applied to the raw TMDB dataset
+prior to modelling. Transparency in cleaning decisions is essential: each filtering
+step involves a trade-off between sample size and data quality, and we justify every
+choice with empirical evidence from the data itself.
+
+## 2.1 Raw Dataset Overview
+
+The raw dataset sourced from TMDB contains over 700,000 movie entries spanning several
+decades. However, the presence of financial variables — budget and revenue — is far
+from universal. Many entries correspond to independent productions, foreign-language
+films, or catalogue titles for which no financial disclosures exist. Before any
+modelling can take place, we must restrict the analysis to films with complete and
+plausible financial records.
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
+
+# ── Plotting style ─────────────────────────────────────────────────────────────
+plt.rcParams.update({
+    'figure.facecolor': 'white',
+    'axes.facecolor':   '#f9f9f9',
+    'axes.grid':        True,
+    'grid.color':       'white',
+    'grid.linewidth':   1.2,
+    'font.family':      'serif',
+    'axes.spines.top':  False,
+    'axes.spines.right':False,
+    'axes.titlesize':   13,
+    'axes.labelsize':   11,
+})
+
+# ── Load raw data ──────────────────────────────────────────────────────────────
+df = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies.csv')
+
+print(f"Raw dataset:  {len(df):,} rows  x  {df.shape[1]} columns")
+print(f"\nMissing financial data:")
+print(f"  budget  = 0 or NaN : {((df['budget'].isna()) | (df['budget'] == 0)).sum():>8,}  "
+      f"({((df['budget'].isna()) | (df['budget'] == 0)).mean()*100:.1f}%)")
+print(f"  revenue = 0 or NaN : {((df['revenue'].isna()) | (df['revenue'] == 0)).sum():>8,}  "
+      f"({((df['revenue'].isna()) | (df['revenue'] == 0)).mean()*100:.1f}%)")
+print(f"  runtime = 0 or NaN : {((df['runtime'].isna()) | (df['runtime'] == 0)).sum():>8,}  "
+      f"({((df['runtime'].isna()) | (df['runtime'] == 0)).mean()*100:.1f}%)")
+```
+
+The table above makes the situation clear: the vast majority of entries are missing at
+least one financial field. This pattern is well-documented in film industry research —
+studios are selective about which productions receive public financial disclosure, and
+smaller or less commercially oriented films rarely report complete data.
+
+## 2.2 Step 1 — Removing Records with Missing Financial Data
+
+We apply the first filter: retaining only films where budget, revenue, and runtime are
+all strictly positive. The figure below shows the proportion of the dataset retained
+at each stage.
+
+```{python}
+# ── Apply first filter ─────────────────────────────────────────────────────────
+df_clean = df[
+    (df['budget'] > 0) &
+    (df['revenue'] > 0) &
+    (df['runtime'] > 0)
+].copy()
+
+df_clean['roi']        = df_clean['revenue'] / df_clean['budget']
+df_clean['profitable'] = (df_clean['roi'] > 1).astype(int)
+
+# ── Funnel chart ───────────────────────────────────────────────────────────────
+stages  = ['Raw dataset', 'budget > 0', 'revenue > 0', 'runtime > 0']
+counts  = [
+    len(df),
+    len(df[df['budget']  > 0]),
+    len(df[(df['budget'] > 0) & (df['revenue'] > 0)]),
+    len(df_clean),
+]
+colors = ['#4e79a7', '#76b7b2', '#59a14f', '#f28e2b']
+
+fig, ax = plt.subplots(figsize=(9, 4))
+bars = ax.barh(stages, counts, color=colors, height=0.55, edgecolor='white', linewidth=1.5)
+for bar, count in zip(bars, counts):
+    ax.text(bar.get_width() + 8000, bar.get_y() + bar.get_height()/2,
+            f'{count:,}  ({count/len(df)*100:.1f}%)',
+            va='center', fontsize=10)
+ax.set_xlabel('Number of records')
+ax.set_title('Dataset size at each filtering stage', pad=12)
+ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{int(x):,}'))
+ax.invert_yaxis()
+plt.tight_layout()
+plt.show()
+```
+
+After this first filter, `{python} f"{len(df_clean):,}"` records remain —
+approximately 1.5% of the raw dataset. While this reduction appears dramatic, it is
+consistent with patterns reported in prior quantitative film studies, where complete
+financial records are available for only a small fraction of registered productions.
+The retained films are predominantly studio-backed releases with formal distribution,
+which is precisely the population of interest for our profitability analysis.
+
+## 2.3 Step 2 — Diagnosing Data Quality Issues
+
+Before finalising the analytical sample, we inspect the ROI distribution for anomalies.
+
+```{python}
+# ── ROI diagnostic plots ───────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+
+# Left: raw ROI distribution (log scale)
+axes[0].hist(np.log1p(df_clean['roi']), bins=80, color='#4e79a7',
+             edgecolor='white', linewidth=0.6)
+axes[0].set_title('ROI distribution (log scale)\nbefore outlier removal')
+axes[0].set_xlabel('log(1 + ROI)')
+axes[0].set_ylabel('Count')
+axes[0].axvline(np.log1p(500), color='#e15759', linewidth=2,
+                linestyle='--', label='ROI = 500 cutoff')
+axes[0].legend(fontsize=9)
+
+# Right: budget distribution before micro-budget filter
+axes[1].hist(np.log1p(df_clean['budget']), bins=80, color='#76b7b2',
+             edgecolor='white', linewidth=0.6)
+axes[1].set_title('Budget distribution (log scale)\nbefore micro-budget filter')
+axes[1].set_xlabel('log(1 + Budget in USD)')
+axes[1].set_ylabel('Count')
+axes[1].axvline(np.log1p(10_000), color='#e15759', linewidth=2,
+                linestyle='--', label='Budget = $10,000 cutoff')
+axes[1].legend(fontsize=9)
+
+plt.tight_layout()
+plt.show()
+
+# Summary statistics
+print("ROI summary statistics (before final cleaning):")
+print(df_clean['roi'].describe().apply(lambda x: f"{x:,.4f}"))
+print(f"\nFilms with ROI > 100   : {(df_clean['roi'] > 100).sum():,}")
+print(f"Films with ROI > 500   : {(df_clean['roi'] > 500).sum():,}")
+print(f"Films with budget < $10k: {(df_clean['budget'] < 10_000).sum():,}")
+```
+
+Two issues are immediately apparent. First, `{python} f"{(df_clean['budget'] < 10_000).sum():,}"`
+films report budgets below \$10,000. While micro-budget productions exist, a budget
+entry of \$1 or \$100 almost certainly reflects a data entry error rather than a true
+production cost — and such entries produce astronomically inflated ROI values that
+would dominate any regression or classification model. Second,
+`{python} f"{(df_clean['roi'] > 500).sum():,}"` films report ROI values exceeding 500,
+far beyond even the most exceptional real-world cases. The Blair Witch Project, for
+instance, returned approximately 400x its production budget and represents an extreme
+upper bound. Retaining values above this threshold would introduce severe right-skew
+into the target variable distribution.
+
+## 2.4 Step 3 — Removing Micro-Budget Entries and ROI Outliers
+
+We apply two additional filters based on the diagnostics above:
+
+- **Budget >= \$10,000** — removes likely data entry errors while preserving genuine low-budget productions
+- **ROI <= 500** — removes extreme outliers that cannot be verified and would distort model training
+
+```{python}
+# ── Final cleaning step ────────────────────────────────────────────────────────
+df_model = df_clean[
+    (df_clean['budget'] >= 10_000) &
+    (df_clean['roi']    <= 500)
+].copy()
+
+print(f"Records retained after final cleaning : {len(df_model):,}")
+print(f"Records removed (micro-budget)        : {(df_clean['budget'] < 10_000).sum():,}")
+print(f"Records removed (ROI > 500)           : {(df_clean['roi'] > 500).sum():,}")
+print(f"Total removed in this step            : {len(df_clean) - len(df_model):,}")
+```
+
+The filters remove a combined `{python} f"{len(df_clean) - len(df_model):,}"` records,
+leaving an analytical sample of `{python} f"{len(df_model):,}"` films. The ROI
+distribution after cleaning is shown below alongside a breakdown of the target variable.
+
+## 2.5 Final Sample Characteristics
+
+```{python}
+# ── Final distribution plots ───────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+# 1. ROI distribution after cleaning
+axes[0].hist(df_model['roi'], bins=60, color='#59a14f',
+             edgecolor='white', linewidth=0.6)
+axes[0].set_title('ROI distribution\n(final sample)')
+axes[0].set_xlabel('ROI')
+axes[0].set_ylabel('Count')
+axes[0].axvline(1, color='#e15759', linewidth=2, linestyle='--', label='Break-even (ROI = 1)')
+axes[0].legend(fontsize=9)
+
+# 2. Class balance
+counts_class = df_model['profitable'].value_counts().sort_index()
+bars = axes[1].bar(
+    ['Not profitable\n(ROI <= 1)', 'Profitable\n(ROI > 1)'],
+    counts_class.values,
+    color=['#e15759', '#59a14f'],
+    edgecolor='white', linewidth=1.5, width=0.5
+)
+for bar, count in zip(bars, counts_class.values):
+    axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 30,
+                 f'{count:,}\n({count/len(df_model)*100:.1f}%)',
+                 ha='center', va='bottom', fontsize=10)
+axes[1].set_title('Target variable distribution\n(profitable vs. not)')
+axes[1].set_ylabel('Count')
+axes[1].set_ylim(0, counts_class.max() * 1.18)
+
+# 3. Budget vs Revenue scatter
+sample = df_model.sample(min(2000, len(df_model)), random_state=42)
+axes[2].scatter(
+    np.log1p(sample['budget']),
+    np.log1p(sample['revenue']),
+    c=sample['profitable'].map({1: '#59a14f', 0: '#e15759'}),
+    alpha=0.45, s=18, linewidths=0
+)
+lims = [
+    min(np.log1p(sample['budget']).min(), np.log1p(sample['revenue']).min()),
+    max(np.log1p(sample['budget']).max(), np.log1p(sample['revenue']).max())
+]
+axes[2].plot(lims, lims, 'k--', linewidth=1.2, alpha=0.6, label='Break-even')
+axes[2].set_title('Budget vs. Revenue\n(log scale, green = profitable)')
+axes[2].set_xlabel('log(1 + Budget)')
+axes[2].set_ylabel('log(1 + Revenue)')
+axes[2].legend(fontsize=9)
+
+plt.tight_layout()
+plt.show()
+
+# Final summary table
+summary = pd.DataFrame({
+    'Metric': [
+        'Total records',
+        'Profitable (ROI > 1)',
+        'Not profitable (ROI <= 1)',
+        'Median ROI',
+        'Mean budget (USD)',
+        'Mean revenue (USD)'
+    ],
+    'Value': [
+        f"{len(df_model):,}",
+        f"{(df_model['profitable']==1).sum():,}  ({(df_model['profitable']==1).mean()*100:.1f}%)",
+        f"{(df_model['profitable']==0).sum():,}  ({(df_model['profitable']==0).mean()*100:.1f}%)",
+        f"{df_model['roi'].median():.2f}x",
+        f"${df_model['budget'].mean():,.0f}",
+        f"${df_model['revenue'].mean():,.0f}",
+    ]
+})
+print(summary.to_string(index=False))
+
+# ── Save final clean dataset ───────────────────────────────────────────────────
+df_model.to_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_model.csv', index=False)
+print("\nSaved to movies_model.csv")
+```
+
+The final analytical sample exhibits a `{python} f"{(df_model['profitable']==1).mean()*100:.1f}"`%
+/ `{python} f"{(df_model['profitable']==0).mean()*100:.1f}"`% class split between
+profitable and non-profitable films. This mild imbalance does not require resampling
+techniques such as SMOTE; we account for it by using stratified train/test splitting
+and reporting F1-score alongside accuracy throughout the modelling section.
+
+The scatter plot of budget versus revenue (log scale) reveals a clear positive
+relationship: higher-budget films tend to generate higher revenue, though substantial
+variance around the break-even line confirms that budget alone is not deterministic of
+profitability. This motivates the richer feature engineering undertaken in the
+following section.
+
+## 2.6 Cleaning Summary
+
+| Step | Criterion | Records removed | Records remaining |
+|------|-----------|----------------|-------------------|
+| Raw dataset | — | — | 722,317 |
+| Remove zero budget | budget = 0 | ~700,000 | ~22,000 |
+| Remove zero revenue | revenue = 0 | ~9,000 | ~13,000 |
+| Remove zero runtime | runtime = 0 | ~2,000 | 10,791 |
+| Remove micro-budgets | budget < \$10,000 | 1,111 | ~9,680 |
+| Remove ROI outliers | ROI > 500 | ~116 | **~9,564** |
+
+: Data cleaning funnel {tbl-colwidths="[25,30,20,25]"}
+
+The final dataset of approximately 9,500 commercially released films with verified
+financial records forms the basis for all subsequent analysis. While this represents
+a small fraction of the raw TMDB catalogue, it is representative of the population
+most relevant to our research question: studio-backed productions for which
+profitability can be meaningfully assessed.
