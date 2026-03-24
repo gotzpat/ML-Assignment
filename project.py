@@ -2,6 +2,24 @@ import pandas as pd
 
 df = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies.csv')
 
+# --- Merge with IMDb dataset (before cleaning, to maximize matches) ---
+imdb = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/IMDb_All_Genres_etf_clean1.csv')
+
+# Normalize titles for case-insensitive matching
+df['_title_key'] = df['title'].str.lower().str.strip()
+imdb['_title_key'] = imdb['Movie_Title'].str.lower().str.strip()
+
+# Deduplicate IMDb on title: keep highest-rated entry per title
+imdb = imdb.sort_values('Rating', ascending=False).drop_duplicates(subset='_title_key', keep='first')
+
+# Keep only the IMDb columns that add new information
+imdb_cols = ['_title_key', 'Rating', 'Censor', 'Director', 'Total_Gross']
+df = df.merge(imdb[imdb_cols], on='_title_key', how='left')
+df.drop(columns=['_title_key'], inplace=True)
+
+print(f"Rows after merge: {len(df)}")
+print(f"IMDb Rating matched: {df['Rating'].notna().sum()} / {len(df)}")
+
 # Keep only rows where the key ML targets/features actually exist
 df_clean = df[
     (df['budget'] > 0) &

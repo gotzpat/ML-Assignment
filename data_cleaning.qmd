@@ -14,15 +14,15 @@ jupyter:
     display_name: Python (venvML)
     language: python
 ---
+# Abstract
 
-# 2. Data Preparation and Cleaning
+# 1 Introduction
 
-This section documents the data preparation pipeline applied to the raw TMDB dataset
-prior to modelling. Transparency in cleaning decisions is essential: each filtering
-step involves a trade-off between sample size and data quality, and we justify every
-choice with empirical evidence from the data itself.
+# 2 Literature Review
 
-## 2.1 Raw Dataset Overview
+# 3 Data and preprocessing
+
+## 3.1 Raw Dataset Overview
 
 The raw dataset sourced from TMDB contains over 700,000 movie entries spanning several
 decades. However, the presence of financial variables — budget and revenue — is far
@@ -71,7 +71,7 @@ least one financial field. This pattern is well-documented in film industry rese
 studios are selective about which productions receive public financial disclosure, and
 smaller or less commercially oriented films rarely report complete data.
 
-## 2.2 Step 1 — Removing Records with Missing Financial Data
+## 3.2 Step 1 — Removing Records with Missing Financial Data
 
 We apply the first filter: retaining only films where budget, revenue, and runtime are
 all strictly positive. The figure below shows the proportion of the dataset retained
@@ -119,7 +119,7 @@ financial records are available for only a small fraction of registered producti
 The retained films are predominantly studio-backed releases with formal distribution,
 which is precisely the population of interest for our profitability analysis.
 
-## 2.3 Step 2 — Diagnosing Data Quality Issues
+## 3.3 Step 2 — Diagnosing Data Quality Issues
 
 Before finalising the analytical sample, we inspect the ROI distribution for anomalies.
 
@@ -169,7 +169,7 @@ instance, returned approximately 400x its production budget and represents an ex
 upper bound. Retaining values above this threshold would introduce severe right-skew
 into the target variable distribution.
 
-## 2.4 Step 3 — Removing Micro-Budget Entries and ROI Outliers
+## 3.4 Step 3 — Removing Micro-Budget Entries and ROI Outliers
 
 We apply two additional filters based on the diagnostics above:
 
@@ -193,7 +193,7 @@ The filters remove a combined `{python} f"{len(df_clean) - len(df_model):,}"` re
 leaving an analytical sample of `{python} f"{len(df_model):,}"` films. The ROI
 distribution after cleaning is shown below alongside a breakdown of the target variable.
 
-## 2.5 Final Sample Characteristics
+## 3.5 Final Sample Characteristics
 
 ```{python}
 # ── Final distribution plots ───────────────────────────────────────────────────
@@ -269,6 +269,7 @@ print(summary.to_string(index=False))
 # ── Save final clean dataset ───────────────────────────────────────────────────
 df_model.to_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_model.csv', index=False)
 print("\nSaved to movies_model.csv")
+
 ```
 
 The final analytical sample exhibits a `{python} f"{(df_model['profitable']==1).mean()*100:.1f}"`%
@@ -283,7 +284,7 @@ variance around the break-even line confirms that budget alone is not determinis
 profitability. This motivates the richer feature engineering undertaken in the
 following section.
 
-## 2.6 Cleaning Summary
+## 3.6 Cleaning Summary
 
 | Step | Criterion | Records removed | Records remaining |
 |------|-----------|----------------|-------------------|
@@ -301,3 +302,7 @@ financial records forms the basis for all subsequent analysis. While this repres
 a small fraction of the raw TMDB catalogue, it is representative of the population
 most relevant to our research question: studio-backed productions for which
 profitability can be meaningfully assessed.
+
+
+# 4 Methodology
+
