@@ -46,6 +46,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import warnings
+from IPython.display import display
 warnings.filterwarnings('ignore')
 
 # ── Plotting style ─────────────────────────────────────────────────────────────
@@ -83,9 +84,12 @@ df.drop(columns=['_title_key'], inplace=True)
 
 matched   = df['Rating'].notna().sum()
 unmatched = df['Rating'].isna().sum()
-print(f"Rows after merge : {len(df):,}")
-print(f"IMDb matched     : {matched:,}  ({matched/len(df)*100:.1f}%)")
-print(f"IMDb unmatched   : {unmatched:,}  ({unmatched/len(df)*100:.1f}%)")
+display(pd.DataFrame({
+    'Category':   ['IMDb matched', 'No IMDb match', 'Total'],
+    'Count':      [matched, unmatched, len(df)],
+    'Share (%)':  [round(matched/len(df)*100, 1),
+                   round(unmatched/len(df)*100, 1), 100.0]
+}))
 
 # ── Match-rate bar chart ───────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(6, 3))
@@ -122,14 +126,26 @@ plausible financial records.
 
 ```{python}
 # ── df already loaded and merged in Section 3.2 ───────────────────────────────
-print(f"Raw dataset:  {len(df):,} rows  x  {df.shape[1]} columns")
-print(f"\nMissing financial data:")
-print(f"  budget  = 0 or NaN : {((df['budget'].isna()) | (df['budget'] == 0)).sum():>8,}  "
-      f"({((df['budget'].isna()) | (df['budget'] == 0)).mean()*100:.1f}%)")
-print(f"  revenue = 0 or NaN : {((df['revenue'].isna()) | (df['revenue'] == 0)).sum():>8,}  "
-      f"({((df['revenue'].isna()) | (df['revenue'] == 0)).mean()*100:.1f}%)")
-print(f"  runtime = 0 or NaN : {((df['runtime'].isna()) | (df['runtime'] == 0)).sum():>8,}  "
-      f"({((df['runtime'].isna()) | (df['runtime'] == 0)).mean()*100:.1f}%)")
+print(f"Raw dataset: {len(df):,} rows × {df.shape[1]} columns")
+_miss = pd.DataFrame({
+    'Variable':       ['budget', 'revenue', 'runtime'],
+    'Missing / zero': [
+        int(((df['budget'].isna())  | (df['budget']  == 0)).sum()),
+        int(((df['revenue'].isna()) | (df['revenue'] == 0)).sum()),
+        int(((df['runtime'].isna()) | (df['runtime'] == 0)).sum()),
+    ],
+    'Missing (%)': [
+        round(((df['budget'].isna())  | (df['budget']  == 0)).mean() * 100, 1),
+        round(((df['revenue'].isna()) | (df['revenue'] == 0)).mean() * 100, 1),
+        round(((df['runtime'].isna()) | (df['runtime'] == 0)).mean() * 100, 1),
+    ],
+    'Present': [
+        int(((df['budget']  > 0) & df['budget'].notna()).sum()),
+        int(((df['revenue'] > 0) & df['revenue'].notna()).sum()),
+        int(((df['runtime'] > 0) & df['runtime'].notna()).sum()),
+    ]
+})
+display(_miss)
 ```
 
 The table above makes the situation clear: the vast majority of entries are missing at
@@ -216,12 +232,19 @@ axes[1].legend(fontsize=9)
 plt.tight_layout()
 plt.show()
 
-# Summary statistics
-print("ROI summary statistics (before final cleaning):")
-print(df_clean['roi'].describe().apply(lambda x: f"{x:,.4f}"))
-print(f"\nFilms with ROI > 100   : {(df_clean['roi'] > 100).sum():,}")
-print(f"Films with ROI > 500   : {(df_clean['roi'] > 500).sum():,}")
-print(f"Films with budget < $10k: {(df_clean['budget'] < 10_000).sum():,}")
+_roi_stats = df_clean['roi'].describe().rename({
+    'count':'N', 'mean':'Mean', 'std':'Std Dev',
+    'min':'Min', '25%':'Q1', '50%':'Median', '75%':'Q3', 'max':'Max'
+})
+_diag = pd.DataFrame({
+    'Statistic': list(_roi_stats.index) + ['ROI > 100', 'ROI > 500', 'Budget < $10k'],
+    'Value': [f"{v:,.4f}" for v in _roi_stats.values] + [
+        f"{(df_clean['roi']>100).sum():,}",
+        f"{(df_clean['roi']>500).sum():,}",
+        f"{(df_clean['budget']<10_000).sum():,}"
+    ]
+})
+display(_diag)
 ```
 
 Two issues are immediately apparent. First, `{python} f"{(df_clean['budget'] < 10_000).sum():,}"`
@@ -249,10 +272,20 @@ df_model = df_clean[
     (df_clean['roi']    <= 500)
 ].copy()
 
-print(f"Records retained after final cleaning : {len(df_model):,}")
-print(f"Records removed (micro-budget)        : {(df_clean['budget'] < 10_000).sum():,}")
-print(f"Records removed (ROI > 500)           : {(df_clean['roi'] > 500).sum():,}")
-print(f"Total removed in this step            : {len(df_clean) - len(df_model):,}")
+display(pd.DataFrame({
+    'Filter applied': [
+        'Micro-budget removed (budget < $10,000)',
+        'Extreme outliers removed (ROI > 500)',
+        'Total removed',
+        'Records retained'
+    ],
+    'Count': [
+        (df_clean['budget'] < 10_000).sum(),
+        (df_clean['roi'] > 500).sum(),
+        len(df_clean) - len(df_model),
+        len(df_model)
+    ]
+}))
 ```
 
 The filters remove a combined `{python} f"{len(df_clean) - len(df_model):,}"` records,
@@ -330,11 +363,10 @@ summary = pd.DataFrame({
         f"${df_model['revenue'].mean():,.0f}",
     ]
 })
-print(summary.to_string(index=False))
+display(summary)
 
 # ── Save final clean dataset ───────────────────────────────────────────────────
 df_model.to_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_model.csv', index=False)
-print("\nSaved to movies_model.csv")
 
 ```
 
@@ -462,9 +494,12 @@ df['imdb_rating'] = df['Rating'].copy()
 df.loc[~_mask, 'imdb_rating'] = _reg.predict(
     df.loc[~_mask, ['vote_average']]).clip(0, 10)
 
-print(f"IMDb matched rows     : {_mask.sum():,}  ({_mask.mean()*100:.1f}%)")
-print(f"Regression R²         : {_r2:.3f}  (vote_average → IMDb rating)")
-print(f"Imputed via regression: {(~_mask).sum():,} rows")
+display(pd.DataFrame({
+    'Category': ['IMDb-matched (observed rating)', 'Regression-imputed', 'Total'],
+    'Count':    [int(_mask.sum()), int((~_mask).sum()), len(df)],
+    'Share (%)': [round(_mask.mean()*100, 1), round((~_mask).mean()*100, 1), 100.0]
+}))
+print(f"Regression R² (vote_average → IMDb Rating): {_r2:.3f}")
 
 # ── Scatter: vote_average vs IMDb Rating (matched rows) with regression line ──
 _samp = df[_mask].sample(min(1000, _mask.sum()), random_state=42)
@@ -510,10 +545,22 @@ y = df['profitable']
 
 print(f"Feature matrix : {X.shape[0]:,} rows × {X.shape[1]} features")
 print(f"Class balance  : {y.mean()*100:.1f}% profitable  /  {(1-y.mean())*100:.1f}% not profitable")
-print(f"\nFeature list:")
-for i, c in enumerate(NUMERIC_FEATURES, 1):
-    print(f"  {i:2d}. {c}")
 ```
+
+**On the IMDb rating imputation.** Only `{python} f"{int(_mask.sum()):,}"` of the
+`{python} f"{len(df):,}"` films in our analytical sample matched an entry in the IMDb
+dataset, leaving `{python} f"{int((~_mask).sum()):,}"` rows without an IMDb rating.
+Simple median imputation would assign every unmatched film the same value —
+indistinguishable regardless of quality — which is both uninformative and
+methodologically weak. Instead, we exploit the strong correlation between TMDB's
+`vote_average` (available for *all* films) and IMDb's `Rating` (available for matched
+films only). A linear regression fitted on the `{python} f"{int(_mask.sum()):,}"` matched
+rows — shown in the scatter plot above — achieves R² = `{python} f"{_r2:.3f}"`, meaning
+that `vote_average` explains `{python} f"{_r2*100:.0f}"`% of the variance in IMDb ratings
+among films where both scores are available. We use this regression to predict plausible
+IMDb ratings for the unmatched films, clipping predictions to the valid [0, 10] range.
+The binary flag `has_imdb_data` is retained as a separate feature so that models can
+distinguish between observed and predicted ratings at inference time.
 
 ### Exploratory feature analysis
 
@@ -625,11 +672,12 @@ scaler      = StandardScaler()
 X_train_sc  = scaler.fit_transform(X_train)
 X_test_sc   = scaler.transform(X_test)
 
-print(f"Training set : {X_train.shape[0]:,} rows  "
-      f"(profitable: {y_train.mean()*100:.1f}%)")
-print(f"Test set     : {X_test.shape[0]:,}  rows  "
-      f"(profitable: {y_test.mean()*100:.1f}%)")
-print(f"\nStratified split preserves class balance: ✓")
+display(pd.DataFrame({
+    'Split':              ['Training set', 'Test set'],
+    'Rows':               [X_train.shape[0], X_test.shape[0]],
+    'Profitable (%)':     [round(y_train.mean()*100, 1), round(y_test.mean()*100, 1)],
+    'Not profitable (%)': [round((1-y_train.mean())*100, 1), round((1-y_test.mean())*100, 1)]
+}))
 ```
 
 # 5 Results
@@ -651,10 +699,13 @@ lr.fit(X_train_sc, y_train)
 y_pred_lr = lr.predict(X_test_sc)
 y_prob_lr = lr.predict_proba(X_test_sc)[:, 1]
 
-print("── Logistic Regression — Test Set ──────────────────────────────────")
-print(classification_report(y_test, y_pred_lr,
-                             target_names=['Not Profitable', 'Profitable']))
-print(f"ROC-AUC : {roc_auc_score(y_test, y_prob_lr):.4f}")
+_report_lr = pd.DataFrame(
+    classification_report(y_test, y_pred_lr,
+                          target_names=['Not Profitable', 'Profitable'],
+                          output_dict=True)
+).T.round(4)
+_report_lr.loc['ROC-AUC', 'precision'] = round(roc_auc_score(y_test, y_prob_lr), 4)
+display(_report_lr)
 
 # ── Confusion matrix ───────────────────────────────────────────────────────────
 cm_lr = confusion_matrix(y_test, y_pred_lr)
@@ -692,11 +743,13 @@ y_prob_rf = rf.predict_proba(X_test)[:, 1]
 
 cv_auc = cross_val_score(rf, X_train, y_train, cv=5, scoring='roc_auc', n_jobs=-1)
 print(f"5-fold CV ROC-AUC : {cv_auc.mean():.4f} ± {cv_auc.std():.4f}")
-print()
-print("── Random Forest — Test Set ────────────────────────────────────────")
-print(classification_report(y_test, y_pred_rf,
-                             target_names=['Not Profitable', 'Profitable']))
-print(f"ROC-AUC : {roc_auc_score(y_test, y_prob_rf):.4f}")
+_report_rf = pd.DataFrame(
+    classification_report(y_test, y_pred_rf,
+                          target_names=['Not Profitable', 'Profitable'],
+                          output_dict=True)
+).T.round(4)
+_report_rf.loc['ROC-AUC', 'precision'] = round(roc_auc_score(y_test, y_prob_rf), 4)
+display(_report_rf)
 
 # ── Feature importance ─────────────────────────────────────────────────────────
 importances = pd.Series(rf.feature_importances_, index=NUMERIC_FEATURES)
@@ -734,10 +787,13 @@ hgb.fit(X_train, y_train)
 y_pred_hgb = hgb.predict(X_test)
 y_prob_hgb = hgb.predict_proba(X_test)[:, 1]
 
-print("── Histogram Gradient Boosting — Test Set ──────────────────────────")
-print(classification_report(y_test, y_pred_hgb,
-                             target_names=['Not Profitable', 'Profitable']))
-print(f"ROC-AUC : {roc_auc_score(y_test, y_prob_hgb):.4f}")
+_report_hgb = pd.DataFrame(
+    classification_report(y_test, y_pred_hgb,
+                          target_names=['Not Profitable', 'Profitable'],
+                          output_dict=True)
+).T.round(4)
+_report_hgb.loc['ROC-AUC', 'precision'] = round(roc_auc_score(y_test, y_prob_hgb), 4)
+display(_report_hgb)
 
 # ── Confusion matrix ───────────────────────────────────────────────────────────
 cm_hgb = confusion_matrix(y_test, y_pred_hgb)
@@ -779,7 +835,7 @@ results = pd.DataFrame({
                       roc_auc_score(y_test, y_prob_hgb)],
 }).round(4)
 
-print(results.to_string(index=False))
+display(results)
 
 # ── ROC curves ─────────────────────────────────────────────────────────────────
 fpr_lr,  tpr_lr,  _ = roc_curve(y_test, y_prob_lr)
@@ -831,10 +887,9 @@ rf_search = RandomizedSearchCV(
 rf_search.fit(X_train, y_train)
 best_rf = rf_search.best_estimator_
 
-print("── Random Forest — Best Parameters ────────────────────────────────")
-print(rf_search.best_params_)
-print(f"Best CV ROC-AUC : {rf_search.best_score_:.4f}")
-print(f"Test  ROC-AUC   : {roc_auc_score(y_test, best_rf.predict_proba(X_test)[:,1]):.4f}")
+display(pd.DataFrame(list(rf_search.best_params_.items()),
+                     columns=['Hyperparameter', 'Best Value']))
+print(f"Best CV ROC-AUC: {rf_search.best_score_:.4f} | Test ROC-AUC: {roc_auc_score(y_test, best_rf.predict_proba(X_test)[:,1]):.4f}")
 ```
 
 ```{python}
@@ -855,10 +910,9 @@ hgb_search = RandomizedSearchCV(
 hgb_search.fit(X_train, y_train)
 best_hgb = hgb_search.best_estimator_
 
-print("── Gradient Boosting — Best Parameters ─────────────────────────────")
-print(hgb_search.best_params_)
-print(f"Best CV ROC-AUC : {hgb_search.best_score_:.4f}")
-print(f"Test  ROC-AUC   : {roc_auc_score(y_test, best_hgb.predict_proba(X_test)[:,1]):.4f}")
+display(pd.DataFrame(list(hgb_search.best_params_.items()),
+                     columns=['Hyperparameter', 'Best Value']))
+print(f"Best CV ROC-AUC: {hgb_search.best_score_:.4f} | Test ROC-AUC: {roc_auc_score(y_test, best_hgb.predict_proba(X_test)[:,1]):.4f}")
 ```
 
 ```{python}
@@ -875,7 +929,7 @@ tuning_results = pd.DataFrame({
         roc_auc_score(y_test, y_prob_hgb_tuned),
     ]
 }).round(4)
-print(tuning_results.to_string(index=False))
+display(tuning_results)
 
 # ── Bar chart: baseline vs tuned AUC ──────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(6, 3.5))
@@ -932,11 +986,12 @@ y_prob_pre = pre_model.predict_proba(X_test_pre)[:, 1]
 auc_pre    = roc_auc_score(y_test, y_prob_pre)
 auc_full   = max(_auc_rf_tuned, _auc_hgb_tuned)
 
-print(f"Model used          : {best_model_name}")
-print(f"Full model AUC      : {auc_full:.4f}")
-print(f"Pre-release AUC     : {auc_pre:.4f}")
-print(f"Performance drop    : {(auc_full - auc_pre):.4f}  ({(auc_full-auc_pre)/auc_full*100:.1f}% relative)")
-print(f"\nPost-release features excluded: vote_average, log_vote_count, log_popularity, imdb_rating")
+display(pd.DataFrame({
+    'Scenario':       ['Full model (all features)', 'Pre-release only'],
+    'Features used':  [len(NUMERIC_FEATURES), len(PRE_RELEASE_FEATURES)],
+    'ROC-AUC':        [round(auc_full, 4), round(auc_pre, 4)],
+    'Δ vs full':      ['—', f'−{auc_full-auc_pre:.4f}  (−{(auc_full-auc_pre)/auc_full*100:.1f}%)']
+}))
 
 # ── Side-by-side AUC bar chart ─────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(5.5, 3.5))
@@ -982,20 +1037,45 @@ if isinstance(_shap_values, list):
 else:
     _sv = _shap_values       # already for positive class
 
-print(f"SHAP values shape : {_sv.shape}  (test rows × features)")
 
 # ── SHAP beeswarm summary plot ─────────────────────────────────────────────────
 shap.summary_plot(_sv, X_test, max_display=15, show=False)
-plt.title('SHAP Feature Contributions — Profitable Class\n'
-          f'(based on {best_model_name}, test set)', pad=12)
+# Set title on the main axes (not plt.title — that clashes with SHAP's colorbar label)
+plt.gcf().axes[0].set_title(
+    f'SHAP Feature Contributions — Profitable Class  ({best_model_name})',
+    pad=8, fontsize=11)
 plt.tight_layout()
 plt.show()
 ```
 
-In the beeswarm plot, each dot is one test film. The x-axis shows the SHAP value
-(positive = pushes prediction towards *profitable*; negative = pushes towards *not
-profitable*). Colour encodes the original feature value (red = high, blue = low).
-Features are ranked by mean absolute SHAP value from top to bottom.
+**How to read the SHAP beeswarm plot.** Each row is one feature, ranked from most
+impactful (top) to least (bottom) by its average absolute SHAP value across all test
+films. Each dot is one film from the test set — so there are roughly 1,900 dots per
+row, many overlapping.
+
+The **x-axis** (SHAP value) tells you the direction and size of a feature's push on
+the model's prediction for that specific film. A positive SHAP value means the feature
+pushed the model *towards* predicting "profitable"; a negative value means it pushed
+*away* from profitable. A SHAP value of 0 means that feature had no effect on that
+particular prediction.
+
+The **colour** of each dot encodes the original feature value for that film: **red =
+high feature value, blue = low feature value**. Reading both together:
+
+- A cluster of **red dots on the right** (e.g. `log_budget`) means: *films with a high
+  budget were pushed strongly towards profitable* — higher budget increases the
+  predicted probability.
+- A cluster of **blue dots on the left** means: *films with a low value of that feature
+  were pushed away from profitable*.
+- A feature where red and blue dots are mixed on both sides (no clear pattern) has a
+  non-monotone or weak relationship with profitability.
+
+Note that `vote_average` and `log_popularity` are expected near the top — they are
+post-release signals that strongly correlate with profitability but would not be
+available at greenlight time. Section 5.6 quantified the cost of removing them
+(AUC drops from `{python} f"{max(_auc_rf_tuned, _auc_hgb_tuned):.3f}"` to
+`{python} f"{auc_pre:.3f}"`). The SHAP plot shows *why*: those features produce the
+largest, most consistent pushes in the model's predictions.
 
 # 6 Discussion
 
