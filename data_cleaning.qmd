@@ -72,48 +72,53 @@ imdb = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/IMDb_All_Genre
 df['_title_key']   = df['title'].str.lower().str.strip()
 imdb['_title_key'] = imdb['Movie_Title'].str.lower().str.strip()
 
-# Keep highest-rated entry per title to avoid many-to-many join inflation
+# Extract year from TMDB release_date for disambiguation
+df['_year'] = pd.to_datetime(df['release_date'], errors='coerce').dt.year
+imdb['_year'] = pd.to_numeric(imdb['Year'], errors='coerce')
+
+# Deduplicate IMDb on title+year; fall back to title-only for entries with no year
 imdb = (imdb
     .sort_values('Rating', ascending=False)
-    .drop_duplicates(subset='_title_key', keep='first')
+    .drop_duplicates(subset=['_title_key', '_year'], keep='first')
 )
 
-imdb_cols = ['_title_key', 'Rating', 'Censor', 'Director', 'Total_Gross']
-df = df.merge(imdb[imdb_cols], on='_title_key', how='left')
-df.drop(columns=['_title_key'], inplace=True)
+# Join on title + year to avoid false matches from shared generic titles
+imdb_cols = ['_title_key', '_year', 'Rating', 'Censor', 'Director', 'Total_Gross']
+df = df.merge(imdb[imdb_cols], on=['_title_key', '_year'], how='left')
+df.drop(columns=['_title_key', '_year'], inplace=True)
 
-matched   = df['Rating'].notna().sum()
-unmatched = df['Rating'].isna().sum()
+# Keep only rows with an observed IMDb match
+total_before = len(df)
+df = df[df['Rating'].notna()].copy()
+matched = len(df)
 display(pd.DataFrame({
-    'Category':   ['IMDb matched', 'No IMDb match', 'Total'],
-    'Count':      [matched, unmatched, len(df)],
-    'Share (%)':  [round(matched/len(df)*100, 1),
-                   round(unmatched/len(df)*100, 1), 100.0]
+    'Category':   ['IMDb matched (retained)', 'No IMDb match (dropped)', 'Total before filter'],
+    'Count':      [matched, total_before - matched, total_before],
+    'Share (%)':  [round(matched/total_before*100, 1),
+                   round((total_before - matched)/total_before*100, 1), 100.0]
 }))
 
 # ── Match-rate bar chart ───────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(6, 3))
-ax.bar(['IMDb matched', 'No IMDb match'],
-       [matched, unmatched],
-       color=['#4e79a7', '#76b7b2'], width=0.4,
+ax.bar(['IMDb matched\n(retained)', 'No IMDb match\n(dropped)'],
+       [matched, total_before - matched],
+       color=['#4e79a7', '#e15759'], width=0.4,
        edgecolor='white', linewidth=1.5)
-for rect, val in zip(ax.patches, [matched, unmatched]):
+for rect, val in zip(ax.patches, [matched, total_before - matched]):
     ax.text(rect.get_x() + rect.get_width()/2,
             rect.get_height() + 4000,
-            f'{val:,}\n({val/len(df)*100:.1f}%)',
+            f'{val:,}\n({val/total_before*100:.1f}%)',
             ha='center', va='bottom', fontsize=10)
 ax.set_ylabel('Number of records')
 ax.set_title('IMDb enrichment match rate (full TMDB dataset)', pad=10)
-ax.set_ylim(0, max(matched, unmatched) * 1.2)
+ax.set_ylim(0, max(matched, total_before - matched) * 1.2)
 plt.tight_layout()
 plt.show()
 ```
 
-The left join preserves all TMDB records; the four IMDb-derived columns (`Rating`,
-`Censor`, `Director`, `Total_Gross`) are populated for
-`{python} f"{matched/len(df)*100:.1f}"`% of rows at this pre-filter stage. After the
-financial filters applied in the following sections, the match rate among the analytical
-sample rises to approximately 43%.
+The analysis is restricted to the `{python} f"{matched:,}"` TMDB records that have a
+confirmed IMDb match. Rows without an IMDb entry are dropped at this stage, ensuring
+that `Rating` and `Censor` are observed values throughout — no imputation is required.
 
 ## 3.3 Raw Dataset Overview
 
@@ -387,11 +392,12 @@ following section.
 | Step | Criterion | Records removed | Records remaining |
 |------|-----------|----------------|-------------------|
 | Raw dataset | — | — | 722,317 |
-| Remove zero budget | budget = 0 | ~700,000 | ~22,000 |
-| Remove zero revenue | revenue = 0 | ~9,000 | ~13,000 |
-| Remove zero runtime | runtime = 0 | ~2,000 | 10,791 |
-| Remove micro-budgets | budget < \$10,000 | 1,111 | ~9,680 |
-| Remove ROI outliers | ROI > 500 | ~116 | **~9,564** |
+| Keep IMDb-matched only | Rating is NaN | ~707,220 | ~15,097 |
+| Remove zero budget | budget = 0 | ~9,500 | ~5,600 |
+| Remove zero revenue | revenue = 0 | ~1,000 | ~4,600 |
+| Remove zero runtime | runtime = 0 | ~400 | ~4,200 |
+| Remove micro-budgets | budget < \$10,000 | ~30 | ~4,170 |
+| Remove ROI outliers | ROI > 500 | ~10 | **~4,160** |
 
 : Data cleaning funnel {tbl-colwidths="[25,30,20,25]"}
 
@@ -477,44 +483,9 @@ df['log_popularity']  = np.log1p(df['popularity'])
 df['log_vote_count']  = np.log1p(df['vote_count'])
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# H  IMDb features — regression-based imputation for unmatched rows
+# H  IMDb features — all rows have observed ratings (no imputation needed)
 # ═══════════════════════════════════════════════════════════════════════════════
-from sklearn.linear_model import LinearRegression as _LR
-
-df['has_imdb_data'] = df['Rating'].notna().astype(int)
-
-# Fit vote_average → IMDb Rating on the matched rows only
-_mask = df['Rating'].notna()
-_reg  = _LR()
-_reg.fit(df.loc[_mask,  ['vote_average']], df.loc[_mask,  'Rating'])
-_r2   = _reg.score(df.loc[_mask, ['vote_average']], df.loc[_mask, 'Rating'])
-
-# Predict for unmatched rows; clip to valid [0, 10] range
-df['imdb_rating'] = df['Rating'].copy()
-df.loc[~_mask, 'imdb_rating'] = _reg.predict(
-    df.loc[~_mask, ['vote_average']]).clip(0, 10)
-
-display(pd.DataFrame({
-    'Category': ['IMDb-matched (observed rating)', 'Regression-imputed', 'Total'],
-    'Count':    [int(_mask.sum()), int((~_mask).sum()), len(df)],
-    'Share (%)': [round(_mask.mean()*100, 1), round((~_mask).mean()*100, 1), 100.0]
-}))
-print(f"Regression R² (vote_average → IMDb Rating): {_r2:.3f}")
-
-# ── Scatter: vote_average vs IMDb Rating (matched rows) with regression line ──
-_samp = df[_mask].sample(min(1000, _mask.sum()), random_state=42)
-_x_line = np.linspace(0, 10, 100).reshape(-1, 1)
-_y_line = _reg.predict(_x_line)
-
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.scatter(_samp['vote_average'], _samp['Rating'],
-           alpha=0.25, s=12, color='#4e79a7', linewidths=0)
-ax.plot(_x_line, _y_line, color='#e15759', linewidth=2,
-        label=f'Regression line  (R² = {_r2:.3f})')
-ax.set_xlabel('TMDB vote\_average'); ax.set_ylabel('IMDb Rating')
-ax.set_title('vote\_average vs IMDb Rating\n(matched films — basis for regression imputation)', pad=10)
-ax.legend(fontsize=9)
-plt.tight_layout(); plt.show()
+df['imdb_rating'] = df['Rating']
 
 CENSOR_MAP = {
     'G': 'G',     'U': 'G',     'PG': 'PG',   'PG-13': 'PG-13',
@@ -533,7 +504,7 @@ NUMERIC_FEATURES = [
     'is_summer', 'is_holiday',
     'n_genres', 'is_english', 'n_prod_cos', 'is_major_studio',
     'n_cast', 'log_popularity', 'log_vote_count', 'vote_average',
-    'imdb_rating', 'has_imdb_data',
+    'imdb_rating',
 ] + GENRE_COLS
 
 # Fill any residual NaNs (non-IMDb columns) with column median
@@ -546,21 +517,6 @@ y = df['profitable']
 print(f"Feature matrix : {X.shape[0]:,} rows × {X.shape[1]} features")
 print(f"Class balance  : {y.mean()*100:.1f}% profitable  /  {(1-y.mean())*100:.1f}% not profitable")
 ```
-
-**On the IMDb rating imputation.** Only `{python} f"{int(_mask.sum()):,}"` of the
-`{python} f"{len(df):,}"` films in our analytical sample matched an entry in the IMDb
-dataset, leaving `{python} f"{int((~_mask).sum()):,}"` rows without an IMDb rating.
-Simple median imputation would assign every unmatched film the same value —
-indistinguishable regardless of quality — which is both uninformative and
-methodologically weak. Instead, we exploit the strong correlation between TMDB's
-`vote_average` (available for *all* films) and IMDb's `Rating` (available for matched
-films only). A linear regression fitted on the `{python} f"{int(_mask.sum()):,}"` matched
-rows — shown in the scatter plot above — achieves R² = `{python} f"{_r2:.3f}"`, meaning
-that `vote_average` explains `{python} f"{_r2*100:.0f}"`% of the variance in IMDb ratings
-among films where both scores are available. We use this regression to predict plausible
-IMDb ratings for the unmatched films, clipping predictions to the valid [0, 10] range.
-The binary flag `has_imdb_data` is retained as a separate feature so that models can
-distinguish between observed and predicted ratings at inference time.
 
 ### Exploratory feature analysis
 
@@ -640,8 +596,7 @@ competitive positioning risk.
 | `log_popularity` | Numeric | TMDB popularity |
 | `log_vote_count` | Numeric | TMDB vote\_count |
 | `vote_average` | Numeric (0–10) | TMDB |
-| `imdb_rating` | Numeric (0–10) | IMDb (regression-imputed via vote\_average) |
-| `has_imdb_data` | Binary | IMDb match flag |
+| `imdb_rating` | Numeric (0–10) | IMDb (observed) |
 | `genre_*` (×10) | Binary | TMDB genres one-hot |
 
 : Feature overview {tbl-colwidths="[28,20,52]"}
@@ -966,7 +921,7 @@ PRE_RELEASE_FEATURES = [
     'log_budget', 'runtime', 'release_year', 'release_month',
     'is_summer', 'is_holiday',
     'n_genres', 'is_english', 'n_prod_cos', 'is_major_studio',
-    'n_cast', 'has_imdb_data',
+    'n_cast',
 ] + GENRE_COLS
 
 # Excluded (post-release): vote_average, log_vote_count, log_popularity, imdb_rating

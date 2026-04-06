@@ -9,13 +9,23 @@ imdb = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/IMDb_All_Genre
 df['_title_key'] = df['title'].str.lower().str.strip()
 imdb['_title_key'] = imdb['Movie_Title'].str.lower().str.strip()
 
-# Deduplicate IMDb on title: keep highest-rated entry per title
-imdb = imdb.sort_values('Rating', ascending=False).drop_duplicates(subset='_title_key', keep='first')
+# Extract year for disambiguation
+df['_year'] = pd.to_datetime(df['release_date'], errors='coerce').dt.year
+imdb['_year'] = pd.to_numeric(imdb['Year'], errors='coerce')
 
-# Keep only the IMDb columns that add new information
-imdb_cols = ['_title_key', 'Rating', 'Censor', 'Director', 'Total_Gross']
-df = df.merge(imdb[imdb_cols], on='_title_key', how='left')
-df.drop(columns=['_title_key'], inplace=True)
+# Deduplicate IMDb on title+year: keep highest-rated entry per title+year
+imdb = imdb.sort_values('Rating', ascending=False).drop_duplicates(subset=['_title_key', '_year'], keep='first')
+
+# Join on title + year to avoid false matches from shared generic titles
+imdb_cols = ['_title_key', '_year', 'Rating', 'Censor', 'Director', 'Total_Gross']
+df = df.merge(imdb[imdb_cols], on=['_title_key', '_year'], how='left')
+df.drop(columns=['_title_key', '_year'], inplace=True)
+
+df.to_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_merged.csv', index=False)
+print("Saved merged dataset to movies_merged.csv")
+
+# Keep only rows with an observed IMDb match
+df = df[df['Rating'].notna()].copy()
 
 print(f"Rows after merge: {len(df)}")
 print(f"IMDb Rating matched: {df['Rating'].notna().sum()} / {len(df)}")
