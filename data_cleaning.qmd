@@ -407,6 +407,19 @@ a small fraction of the raw TMDB catalogue, it is representative of the populati
 most relevant to our research question: studio-backed productions for which
 profitability can be meaningfully assessed.
 
+## 3.9 Export Cleaned Dataset
+
+```{python}
+import os
+
+_out_path = os.path.join(os.path.dirname(os.path.abspath('data_cleaning.qmd')), 'movies_model.csv')
+
+if not os.path.exists(_out_path):
+    df_model.to_csv(_out_path, index=False)
+    print(f"Saved cleaned dataset to: {_out_path}")
+else:
+    print(f"Cleaned dataset already exists at: {_out_path}")
+```
 
 # 4 Methodology
 
@@ -995,10 +1008,9 @@ else:
 
 # ── SHAP beeswarm summary plot ─────────────────────────────────────────────────
 shap.summary_plot(_sv, X_test, max_display=15, show=False)
-# Set title on the main axes (not plt.title — that clashes with SHAP's colorbar label)
-plt.gcf().axes[0].set_title(
+plt.suptitle(
     f'SHAP Feature Contributions — Profitable Class  ({best_model_name})',
-    pad=8, fontsize=11)
+    fontsize=11, y=1.02)
 plt.tight_layout()
 plt.show()
 ```
