@@ -22,7 +22,7 @@ This study asks two core questions about predicting whether a film will turn a p
 
 **RQ1 — What can studios know before a film is released?** Audience ratings and
 popularity scores are strong predictors of profitability — but they only exist after
-the film is already in theatres. We ask how much prediction accuracy a studio loses
+the film is already in cinema. We ask how much prediction accuracy a studio loses
 if it can only use information available at the time of the greenlight decision (budget,
 genre, cast size, release timing), and whether this loss is larger for certain genres
 or budget ranges than others.
@@ -663,7 +663,7 @@ display(pd.DataFrame({
 }))
 ```
 
-# 5 Results
+# 5 Models
 
 ## 5.1 Logistic Regression
 
@@ -795,7 +795,8 @@ plt.tight_layout()
 plt.show()
 ```
 
-## 5.4 Model Comparison
+# 6 Results
+## 6.1 Model Comparison
 
 ```{python}
 # ── Metrics table ──────────────────────────────────────────────────────────────
@@ -846,7 +847,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-## 5.5 Hyperparameter Tuning
+## 6.2 Hyperparameter Tuning
 
 The baseline models used default or manually selected hyperparameters. Here we apply
 `RandomizedSearchCV` with 5-fold stratified cross-validation to find better
@@ -935,7 +936,7 @@ ax.legend(fontsize=9)
 plt.tight_layout(); plt.show()
 ```
 
-## 5.6 Pre-Release Scenario Analysis
+## 6.3 Pre-Release Scenario Analysis
 
 All features used so far include post-release signals such as `vote_average`,
 `log_popularity`, and `log_vote_count` — metrics that accumulate after a film is
@@ -997,7 +998,7 @@ post-release audience signals. The pre-release AUC represents the performance a 
 could realistically achieve at greenlight time — a meaningful benchmark for any
 practical decision-support application.
 
-## 5.7 Feature Contributions (SHAP)
+## 6.4 Feature Contributions (SHAP)
 
 Mean Decrease Impurity (MDI) importance — used in Section 5.2 — measures average
 feature usage across trees but can overstate the importance of high-cardinality
@@ -1059,9 +1060,9 @@ available at greenlight time. Section 5.6 quantified the cost of removing them
 `{python} f"{auc_pre:.3f}"`). The SHAP plot shows *why*: those features produce the
 largest, most consistent pushes in the model's predictions.
 
-## 5.8 Information-Value Heterogeneity: Pre-Release Gap by Genre and Budget Tier
+## 6.5 Information-Value Heterogeneity: Pre-Release Gap by Genre and Budget Tier
 
-The aggregate AUC gap reported in Section 5.6 masks important heterogeneity. A studio
+The aggregate AUC gap reported in Section 6.3 masks important heterogeneity. A studio
 greenlighting a Horror film faces a very different information environment than one
 committing to a mid-budget Drama. This section decomposes the AUC gap — full model
 minus pre-release model — across genre and budget strata, revealing where post-release
@@ -1210,7 +1211,7 @@ conventions). Large-budget blockbusters (>\$100M, Δ = 0.081) also show modest g
 suggesting that at sufficient scale, franchise and distribution advantages dominate
 audience response noise.
 
-## 5.9 Temporal Generalization: Walk-Forward Evaluation
+## 6.6 Temporal Generalization: Walk-Forward Evaluation
 
 The random 80/20 train/test split used throughout this study treats time as an
 i.i.d. dimension — a standard assumption that may not hold for film profitability. The
@@ -1343,9 +1344,9 @@ threat to film profitability models: static random-split evaluation would concea
 walk-forward design is therefore the methodologically appropriate evaluation framework
 for any practical greenlight decision tool.
 
-# 6 Discussion
+# 7 Discussion
 
-# 7 Conclusion
+# 8 Conclusion
 
-# 8 References
+# 9 References
 
