@@ -8,10 +8,11 @@ format:
 execute:
   warning: false
   message: false
+execute-dir: file
 jupyter:
   kernelspec:
-    name: venvml
-    display_name: Python (venvML)
+    name: python3
+    display_name: Python 3
     language: python
 ---
 # Abstract
@@ -39,21 +40,64 @@ which periods (such as 2020) caused the model to break down and whether it recov
 
 ## 3.1 Data Sources
 
-This study draws on two complementary datasets that are merged prior to any filtering.
+This study draws on two complementary datasets that were combined to form the
+analytical sample. The unit of observation throughout is a single film: one row
+corresponds to one theatrical release, identified by title and release year.
 
-| Dataset | Source | Raw rows | Key variables |
-|---|---|---|---|
-| TMDB movies | TMDB API dump | 722,317 | budget, revenue, runtime, genres, language, production companies, cast, keywords |
-| IMDb enrichment | IMDb curated list | 5,562 | Rating, Censor, Director, Total\_Gross, main\_genre |
+The **primary source** is the TMDb dataset, a large movie metadata table containing
+722,317 films with variables covering title, genres, original language, overview,
+popularity, production companies, release date, budget, revenue, runtime, user ratings,
+vote counts, cast and crew credits, keywords, and visual metadata. The **secondary
+source** is a curated IMDb dataset containing 5,562 commercially notable films released
+between 1920 and 2022, with variables including title, release year, director, cast
+members, IMDb rating, runtime, content rating, total gross revenue, and genre labels.
 
-: Dataset overview {tbl-colwidths="[22,22,15,41]"}
+| Dataset | Source | Raw rows | Period | Key variables |
+|---|---|---|---|---|
+| TMDb movies | TMDb API dump | 722,317 | Multi-decade | budget, revenue, runtime, genres, language, production companies, cast, keywords, popularity, vote counts |
+| IMDb enrichment | IMDb curated list | 5,562 | 1920–2022 | Rating, Censor, Director, Total\_Gross, genre |
 
-The TMDB dataset provides comprehensive coverage but lacks content ratings and reliable
-director attribution. The IMDb dataset supplies these fields for a curated subset of
-commercially notable films. A title-matched left join enriches the TMDB records where
-possible while preserving the full TMDB coverage for the modelling sample.
+: Dataset overview {tbl-colwidths="[18,18,12,14,38]"}
 
-## 3.2 IMDb Enrichment Merge
+The TMDb dataset provides comprehensive global coverage but lacks content ratings and
+reliable director attribution, and financial disclosures are sparse outside studio-backed
+releases. The IMDb dataset supplies these fields for a curated subset of commercially
+notable titles. A title-and-year left join enriches the TMDb records where possible,
+with the merged sample filtered to retain only films with a confirmed IMDb match.
+
+## 3.2 Target Variable
+
+The target variable for all classification models is a binary indicator of film
+profitability derived directly from the financial records. Return on investment (ROI) is
+defined as ROI = revenue / budget: a value greater than one means the film recouped
+more at the box office than it cost to produce. A film is labelled **profitable**
+(class 1) when ROI > 1, and **not profitable** (class 0) otherwise.
+
+This break-even threshold was chosen for two reasons. First, it is the minimum return
+that covers production cost — the point at which a studio recoups its principal
+outlay — making it directly actionable for investment decisions: a greenlight model
+that predicts whether ROI will exceed 1 answers the question a financier actually
+faces. Second, the binary framing produces an interpretable classification target that
+maps cleanly onto industry practice, where films are routinely described as having
+"turned a profit" or "flopped" relative to their budget. It is worth noting that ROI
+> 1 does not account for marketing and distribution expenditure, which can equal or
+exceed the production budget for wide releases; the threshold therefore represents a
+conservative lower bound on true profitability rather than a complete accounting of
+returns.
+
+## 3.3 Data Cleaning
+
+### 3.3.1 IMDb Merge and Deduplication
+
+Because the TMDb dataset lacks content ratings and reliable director information, the
+IMDb dataset was used to enrich the TMDb records with these fields. To reduce false
+matches arising from shared generic titles, the merge was performed using a combination
+of title and release year after standardising both datasets to lowercase and stripping
+whitespace. A title-and-year left join was applied, and IMDb entries were deduplicated
+by title and year (keeping the highest-rated record where duplicates existed) before
+the join. The TMDb records were then filtered to retain only films with an observed
+IMDb match, ensuring that the IMDb-derived variables (`Rating`, `Censor`, `Director`)
+are consistently observed across all retained rows — no imputation is required.
 
 ```{python}
 import pandas as pd
@@ -61,8 +105,13 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import warnings
+from pathlib import Path
 from IPython.display import display
 warnings.filterwarnings('ignore')
+
+# ── All paths are relative to this file's directory ───────────────────────────
+HERE     = Path('.')
+DATA_DIR = HERE / 'data'
 
 # ── Plotting style ─────────────────────────────────────────────────────────────
 plt.rcParams.update({
@@ -79,10 +128,10 @@ plt.rcParams.update({
 })
 
 # ── Load raw TMDB data ─────────────────────────────────────────────────────────
-df = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies.csv')
+df = pd.read_csv(DATA_DIR / 'movies.csv')
 
 # ── Load and deduplicate IMDb data ─────────────────────────────────────────────
-imdb = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/IMDb_All_Genres_etf_clean1.csv')
+imdb = pd.read_csv(DATA_DIR / 'IMDb_All_Genres_etf_clean1.csv')
 
 df['_title_key']   = df['title'].str.lower().str.strip()
 imdb['_title_key'] = imdb['Movie_Title'].str.lower().str.strip()
@@ -135,7 +184,7 @@ The analysis is restricted to the `{python} f"{matched:,}"` TMDB records that ha
 confirmed IMDb match. Rows without an IMDb entry are dropped at this stage, ensuring
 that `Rating` and `Censor` are observed values throughout — no imputation is required.
 
-## 3.3 Raw Dataset Overview
+### 3.3.2 Missing and Zero Financial Records
 
 The raw dataset sourced from TMDB contains over 700,000 movie entries spanning several
 decades. However, the presence of financial variables — budget and revenue — is far
@@ -145,7 +194,7 @@ modelling can take place, we must restrict the analysis to films with complete a
 plausible financial records.
 
 ```{python}
-# ── df already loaded and merged in Section 3.2 ───────────────────────────────
+# ── df already loaded and merged in Section 3.3.1 ─────────────────────────────
 print(f"Raw dataset: {len(df):,} rows × {df.shape[1]} columns")
 _miss = pd.DataFrame({
     'Variable':       ['budget', 'revenue', 'runtime'],
@@ -172,8 +221,6 @@ The table above makes the situation clear: the vast majority of entries are miss
 least one financial field. This pattern is well-documented in film industry research —
 studios are selective about which productions receive public financial disclosure, and
 smaller or less commercially oriented films rarely report complete data.
-
-## 3.4 Step 1 — Removing Records with Missing Financial Data
 
 We apply the first filter: retaining only films where budget, revenue, and runtime are
 all strictly positive. The figure below shows the proportion of the dataset retained
@@ -212,6 +259,13 @@ ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{int(x):,}'))
 ax.invert_yaxis()
 plt.tight_layout()
 plt.show()
+
+# Track intermediate counts for the funnel summary table
+_n_raw         = total_before
+_n_matched     = matched
+_n_budget_pos  = counts[1]
+_n_revenue_pos = counts[2]
+_n_runtime_pos = counts[3]   # = len(df_clean)
 ```
 
 After this first filter, `{python} f"{len(df_clean):,}"` records remain —
@@ -221,9 +275,14 @@ financial records are available for only a small fraction of registered producti
 The retained films are predominantly studio-backed releases with formal distribution,
 which is precisely the population of interest for our profitability analysis.
 
-## 3.5 Step 2 — Diagnosing Data Quality Issues
+### 3.3.3 Implausible Observations
 
-Before finalising the analytical sample, we inspect the ROI distribution for anomalies.
+To improve interpretability and reduce the influence of extreme values, highly
+right-skewed financial variables such as budget and revenue are subsequently
+log-transformed (see Section 3.4). Before applying those transformations, we examine
+the raw distributions of ROI and budget as part of an exploratory quality check, which
+helps detect implausible micro-budget entries and extreme ROI values likely caused by
+data entry errors or genuinely anomalous cases.
 
 ```{python}
 # ── ROI diagnostic plots ───────────────────────────────────────────────────────
@@ -267,52 +326,92 @@ _diag = pd.DataFrame({
 display(_diag)
 ```
 
-Two issues are immediately apparent. First, `{python} f"{(df_clean['budget'] < 10_000).sum():,}"`
-films report budgets below \$10,000. While micro-budget productions exist, a budget
-entry of \$1 or \$100 almost certainly reflects a data entry error rather than a true
-production cost — and such entries produce astronomically inflated ROI values that
-would dominate any regression or classification model. Second,
+Two issues are immediately apparent. First,
+`{python} f"{(df_clean['budget'] < 10_000).sum():,}"` films report budgets below
+\$10,000. While micro-budget productions exist, an entry of \$1 or \$100 almost
+certainly reflects a data entry error rather than a true production cost — and such
+entries produce astronomically inflated ROI values that would dominate any regression
+or classification model. Second,
 `{python} f"{(df_clean['roi'] > 500).sum():,}"` films report ROI values exceeding 500,
 far beyond even the most exceptional real-world cases. The Blair Witch Project, for
-instance, returned approximately 400x its production budget and represents an extreme
-upper bound. Retaining values above this threshold would introduce severe right-skew
+instance, returned approximately 400× its production budget and represents an extreme
+upper bound; retaining values above this threshold would introduce severe right-skew
 into the target variable distribution.
 
-## 3.6 Step 3 — Removing Micro-Budget Entries and ROI Outliers
-
-We apply two additional filters based on the diagnostics above:
-
-- **Budget >= \$10,000** — removes likely data entry errors while preserving genuine low-budget productions
-- **ROI <= 500** — removes extreme outliers that cannot be verified and would distort model training
+We apply filters sequentially, tracking the count after each step.
 
 ```{python}
-# ── Final cleaning step ────────────────────────────────────────────────────────
-df_model = df_clean[
-    (df_clean['budget'] >= 10_000) &
-    (df_clean['roi']    <= 500)
-].copy()
+# ── Sequential cleaning filters with count tracking ───────────────────────────
+# Step 1: micro-budget removal
+df_model = df_clean[df_clean['budget'] >= 10_000].copy()
+_n_after_budget = len(df_model)
 
-display(pd.DataFrame({
-    'Filter applied': [
-        'Micro-budget removed (budget < $10,000)',
-        'Extreme outliers removed (ROI > 500)',
-        'Total removed',
-        'Records retained'
-    ],
-    'Count': [
-        (df_clean['budget'] < 10_000).sum(),
-        (df_clean['roi'] > 500).sum(),
-        len(df_clean) - len(df_model),
-        len(df_model)
-    ]
-}))
+# Step 2: ROI outlier removal
+df_model = df_model[df_model['roi'] <= 500].copy()
+_n_after_roi = len(df_model)
+
+# ── Data quality audit on all modelling columns ────────────────────────────────
+_audit_cols = {
+    'runtime':       ('min feature film length',   40,    360),
+    'vote_average':  ('TMDB rating range',          0.1,   10),
+    'vote_count':    ('minimum votes for reliability', 10, None),
+    'Rating':        ('IMDb rating range',           1,    10),
+    'popularity':    ('must be positive',            0.01, None),
+}
+
+_audit_rows = []
+for col, (desc, lo, hi) in _audit_cols.items():
+    if col not in df_model.columns:
+        continue
+    n_nan  = df_model[col].isna().sum()
+    n_lo   = (df_model[col] < lo).sum() if lo is not None else 0
+    n_hi   = (df_model[col] > hi).sum() if hi is not None else 0
+    _audit_rows.append({
+        'Column': col, 'Check': desc,
+        'NaN': n_nan, 'Below threshold': n_lo, 'Above threshold': n_hi,
+        'Total flagged': n_nan + n_lo + n_hi
+    })
+display(pd.DataFrame(_audit_rows))
+
+# ── Apply quality filters ──────────────────────────────────────────────────────
+# Runtime: feature films are conventionally ≥ 40 min
+df_model = df_model[df_model['runtime'] >= 40].copy()
+_n_after_runtime = len(df_model)
+
+# IMDb Rating: valid range 1–10
+df_model = df_model[df_model['Rating'].between(1, 10)].copy()
+_n_after_rating = len(df_model)
+
+# TMDB vote_average: must be > 0 (0 means no audience votes recorded)
+df_model = df_model[df_model['vote_average'] > 0].copy()
+_n_after_vote_avg = len(df_model)
+
+# TMDB vote_count: require ≥ 10 votes for a reliable vote_average
+df_model = df_model[df_model['vote_count'] >= 10].copy()
+_n_after_vote_cnt = len(df_model)
+
+# Duplicates: drop films with identical title + release_date
+df_model = df_model.drop_duplicates(subset=['title', 'release_date']).copy()
+_n_final = len(df_model)
+
+print(f"\nAfter budget ≥ $10k:          {_n_after_budget:,}")
+print(f"After ROI ≤ 500:              {_n_after_roi:,}")
+print(f"After runtime ≥ 40 min:       {_n_after_runtime:,}  (−{_n_after_roi    - _n_after_runtime:,})")
+print(f"After IMDb rating in [1,10]:  {_n_after_rating:,}  (−{_n_after_runtime - _n_after_rating:,})")
+print(f"After vote_average > 0:       {_n_after_vote_avg:,}  (−{_n_after_rating  - _n_after_vote_avg:,})")
+print(f"After vote_count ≥ 10:        {_n_after_vote_cnt:,}  (−{_n_after_vote_avg - _n_after_vote_cnt:,})")
+print(f"After deduplication:          {_n_final:,}  (−{_n_after_vote_cnt - _n_final:,})")
 ```
 
-The filters remove a combined `{python} f"{len(df_clean) - len(df_model):,}"` records,
-leaving an analytical sample of `{python} f"{len(df_model):,}"` films. The ROI
-distribution after cleaning is shown below alongside a breakdown of the target variable.
+The data quality audit surfaces any remaining implausible values across all columns
+used in modelling. Runtimes below 40 minutes are below the conventional feature-film
+threshold; IMDb ratings outside 1–10 and TMDB vote averages of exactly zero indicate
+missing or malformed records; and films with fewer than 10 votes produce unreliable
+audience sentiment signals. All flagged records are dropped before finalising the sample.
 
-## 3.7 Final Sample Characteristics
+The filters leave an analytical sample of `{python} f"{_n_final:,}"` films.
+
+### 3.3.4 Final Sample and Cleaning Summary
 
 ```{python}
 # ── Final distribution plots ───────────────────────────────────────────────────
@@ -386,13 +485,14 @@ summary = pd.DataFrame({
 display(summary)
 
 # ── Save final clean dataset ───────────────────────────────────────────────────
-df_model.to_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_model.csv', index=False)
+df_model.to_csv(HERE / 'movies_model.csv', index=False)
 
 ```
 
-The final analytical sample exhibits a `{python} f"{(df_model['profitable']==1).mean()*100:.1f}"`%
-/ `{python} f"{(df_model['profitable']==0).mean()*100:.1f}"`% class split between
-profitable and non-profitable films. This mild imbalance does not require resampling
+The final analytical sample of `{python} f"{_n_final:,}"` films exhibits a
+`{python} f"{(df_model['profitable']==1).mean()*100:.1f}"`% /
+`{python} f"{(df_model['profitable']==0).mean()*100:.1f}"`% class split between
+profitable and non-profitable films. This imbalance does not require resampling
 techniques such as SMOTE; we account for it by using stratified train/test splitting
 and reporting F1-score alongside accuracy throughout the modelling section.
 
@@ -402,27 +502,41 @@ variance around the break-even line confirms that budget alone is not determinis
 profitability. This motivates the richer feature engineering undertaken in the
 following section.
 
-## 3.8 Cleaning Summary
+```{python}
+# ── Dynamic cleaning funnel table ──────────────────────────────────────────────
+_steps = [
+    ('Raw TMDB dataset',              '—',                          None,               _n_raw),
+    ('Keep IMDb-matched only',        'Rating is NaN',              _n_raw,             _n_matched),
+    ('Remove zero/missing budget',    'budget = 0 or NaN',          _n_matched,         _n_budget_pos),
+    ('Remove zero/missing revenue',   'revenue = 0 or NaN',         _n_budget_pos,      _n_revenue_pos),
+    ('Remove zero/missing runtime',   'runtime = 0 or NaN',         _n_revenue_pos,     _n_runtime_pos),
+    ('Remove micro-budgets',          'budget < $10,000',           _n_runtime_pos,     _n_after_budget),
+    ('Remove ROI outliers',           'ROI > 500',                  _n_after_budget,    _n_after_roi),
+    ('Remove short films',            'runtime < 40 min',           _n_after_roi,       _n_after_runtime),
+    ('Remove bad IMDb ratings',       'Rating outside [1, 10]',     _n_after_runtime,   _n_after_rating),
+    ('Remove unrated films',          'vote_average = 0',           _n_after_rating,    _n_after_vote_avg),
+    ('Remove low-vote films',         'vote_count < 10',            _n_after_vote_avg,  _n_after_vote_cnt),
+    ('Remove duplicates',             'same title + release date',  _n_after_vote_cnt,  _n_final),
+]
 
-| Step | Criterion | Records removed | Records remaining |
-|------|-----------|----------------|-------------------|
-| Raw dataset | — | — | 722,317 |
-| Keep IMDb-matched only | Rating is NaN | ~707,220 | ~15,097 |
-| Remove zero budget | budget = 0 | ~9,500 | ~5,600 |
-| Remove zero revenue | revenue = 0 | ~1,000 | ~4,600 |
-| Remove zero runtime | runtime = 0 | ~400 | ~4,200 |
-| Remove micro-budgets | budget < \$10,000 | ~30 | ~4,170 |
-| Remove ROI outliers | ROI > 500 | ~10 | **~4,160** |
+_funnel = pd.DataFrame([
+    {
+        'Step': s, 'Criterion': c,
+        'Records removed': '—' if prev is None else f'{prev - rem:,}',
+        'Records remaining': f'{rem:,}'
+    }
+    for s, c, prev, rem in _steps
+])
+display(_funnel.style.set_properties(**{'text-align': 'left'}))
+```
 
-: Data cleaning funnel {tbl-colwidths="[25,30,20,25]"}
-
-The final dataset of approximately 9,500 commercially released films with verified
+The final dataset of `{python} f"{_n_final:,}"` commercially released films with verified
 financial records forms the basis for all subsequent analysis. While this represents
 a small fraction of the raw TMDB catalogue, it is representative of the population
 most relevant to our research question: studio-backed productions for which
 profitability can be meaningfully assessed.
 
-## 3.9 Export Cleaned Dataset
+### 3.3.5 Export Cleaned Dataset
 
 ```{python}
 import os
@@ -436,18 +550,71 @@ else:
     print(f"Cleaned dataset already exists at: {_out_path}")
 ```
 
-# 4 Methodology
+## 3.4 Feature Engineering
 
-## 4.1 Feature Engineering
+Raw film data does not arrive in a form that models can directly consume — budgets span
+six orders of magnitude, genres are stored as free-text strings, and a release date
+carries no signal on its own. Feature engineering translates these raw fields into
+numeric variables that capture the economic, temporal, and creative signals most relevant
+to predicting profitability.
 
-The raw dataset contains several columns encoded as hyphen- or dash-separated strings
-(genres, production companies, cast). This section extracts numeric and categorical
-signals from those fields, guided by domain knowledge about what drives box-office
-outcomes.
+**Financial features.** Budget is log-transformed (`log_budget`) because production
+costs are extremely right-skewed: the difference between a \$1M and a \$10M film is
+economically comparable to the difference between a \$10M and a \$100M film, and a
+linear scale would make the model treat these very differently. The log scale corrects
+for this. A categorical `budget_tier` variable is also derived to allow non-linear
+threshold effects to be captured in exploratory analysis.
+
+**Temporal features.** From the release date we extract `release_year` and
+`release_month`, plus two binary season flags: `is_summer` (June–July, the
+blockbuster window with school holidays and peak cinema attendance) and `is_holiday`
+(November–December, the awards and family film season). Release timing is a genuine
+strategic decision — studios deliberately schedule their strongest tentpoles into these
+windows — so it contains real predictive information rather than just noise.
+
+**Genre features.** The raw genres field is a hyphen-separated string that can list
+multiple genres per film. We extract the first-listed genre as `primary_genre`, count
+how many genres a film spans (`n_genres`), and create ten binary indicator columns —
+one for each of the most common genres (Drama, Comedy, Action, Thriller, Romance,
+Adventure, Crime, Horror, Family, Science Fiction). A film tagged as both Action and
+Adventure gets a 1 in both columns. Genre matters because audience expectations,
+marketing channels, and break-even economics differ substantially across categories.
+
+**Language and origin.** `is_english` flags whether the original language is English.
+Non-English films face structurally different distribution economics in the dataset,
+which skews predominantly towards US and UK releases, so this binary captures a
+meaningful segment boundary.
+
+**Production scale.** We count the number of production companies listed (`n_prod_cos`)
+as a proxy for the size and complexity of the financing structure — co-productions with
+many companies tend to be larger international releases. More directly, `is_major_studio`
+flags whether any of the twelve major distributors (Disney, Warner, Universal,
+Paramount, Sony, Fox, etc.) appear in the production companies field. Major studio
+involvement is one of the strongest pre-release signals of distribution reach and
+marketing investment, both of which increase the probability of recouping the budget.
+
+**Cast size.** `n_cast` counts the number of credited cast members extracted from the
+credits string. While star power is not captured here (we do not have billing or
+fame data), cast size loosely proxies for production scale and the breadth of the
+ensemble.
+
+**Post-release engagement signals.** TMDB's popularity score and vote count are
+log-transformed to produce `log_popularity` and `log_vote_count`. These are powerful
+predictors — films that attract large audiences also tend to be profitable — but they
+are fundamentally *post-release* signals: they only accumulate once a film is in
+theatres. Including them in a full model is valid for retrospective analysis, but they
+would not be available at the time a studio makes its greenlight decision. This
+distinction is central to RQ1 (Section 6.3), which measures the AUC cost of removing
+these features.
+
+**IMDb rating and content rating.** `imdb_rating` is taken directly from the IMDb
+enrichment data and reflects critical and audience consensus. `Censor` ratings are
+mapped to a harmonised five-level scheme (G, PG, PG-13, R, NR) to reconcile the mix
+of US MPAA ratings and international equivalents in the data.
 
 ```{python}
 # ── Load analytical dataset (post-cleaning, includes IMDb columns) ─────────────
-df = pd.read_csv('/Users/patriciagoetz/Desktop/MASTER/SPRING/ML/movies_model.csv')
+df = pd.read_csv(HERE / 'movies_model.csv')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # A  Financial features
@@ -600,13 +767,23 @@ plt.tight_layout()
 plt.show()
 ```
 
-The genre chart reveals that Fantasy, Horror, and Family films achieve the highest
-profitability rates, while Drama and Foreign-language productions fall below the overall
-mean. The budget tier chart exposes a U-shaped pattern: micro-budget films (<\$1M) post
-surprisingly high profitability rates because their modest break-even requirements are
-easily met by even limited theatrical runs, while blockbusters (>\$100M) benefit from
-studio-backed wide distribution. Mid-tier productions (\$1M–\$50M) face the most
-competitive positioning risk.
+The genre chart shows a clear ranking. Family and Animation films achieve the highest
+profitability rates, reflecting their broad demographic appeal and strong ancillary
+revenue streams (merchandise, streaming, re-releases). Fantasy and Adventure follow
+closely, buoyed by franchise franchises with built-in audiences. Horror sits in the
+middle of the ranking but is notable for a different reason: it is the genre with the
+lowest typical production budget relative to revenue, meaning even modest box-office
+returns clear the ROI > 1 threshold easily. Towards the bottom, Crime and Action films
+show lower profitability rates, likely because they tend to carry higher production and
+marketing costs without the guaranteed family or franchise audience that lifts the
+top-ranked genres.
+
+The budget tier chart does not follow a simple pattern. The very highest profitability
+rates are concentrated in the large- and blockbuster-budget tiers (>\$50M), where
+major studio distribution, wide release strategies, and franchise IP reduce the risk
+of outright failure. Mid-tier productions (\$10M–\$50M) occupy the most competitive
+and uncertain position — large enough to require significant marketing spend, but
+without the guaranteed audience scale of a tentpole release.
 
 | Feature | Type | Source |
 |---|---|---|
@@ -629,7 +806,9 @@ competitive positioning risk.
 
 : Feature overview {tbl-colwidths="[28,20,52]"}
 
-## 4.2 Training Protocol
+# 4 Methodology
+
+## 4.1 Training Protocol
 
 Three classifier families are trained and compared. **Logistic Regression** serves as
 the linear baseline and provides interpretable coefficient-level insights.

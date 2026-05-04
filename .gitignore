@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Quarto
+/.quarto/
+*_files/
+*.quarto_ipynb
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venvML/
+
