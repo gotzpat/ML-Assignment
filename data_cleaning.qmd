@@ -19,20 +19,60 @@ jupyter:
 
 # 1 Introduction
 
-This study asks two core questions about predicting whether a film will turn a profit:
+The film industry is one of the most financially unpredictable creative sectors in the
+global economy. A production backed by hundreds of millions of dollars can fail
+spectacularly at the box office, while a micro-budget film can generate extraordinary
+returns — *The Blair Witch Project*, for instance, was made for roughly \$60,000 and
+grossed nearly \$250 million worldwide, representing an ROI of approximately 400×.
+Yet for every *Blair Witch Project*, countless low-budget productions disappear without
+a trace, and for every blockbuster franchise that dominates a decade, there are
+expensive misfires that studios would rather forget. Predicting whether a film will
+recover its production costs has remained one of the most persistent challenges in
+entertainment economics.
 
-**RQ1 — What can studios know before a film is released?** Audience ratings and
-popularity scores are strong predictors of profitability — but they only exist after
-the film is already in cinema. We ask how much prediction accuracy a studio loses
-if it can only use information available at the time of the greenlight decision (budget,
-genre, cast size, release timing), and whether this loss is larger for certain genres
-or budget ranges than others.
+Researchers have long attempted to bring analytical rigour to this question. Simonton
+(2009) proposed that a film's overall success can be understood through three
+dimensions — critical reception, financial performance, and industry recognition
+through awards — and that these dimensions respond to overlapping but distinct sets
+of inputs. This study focuses exclusively on financial profitability: specifically,
+whether a film recoups its production budget through box-office revenue. This choice
+is deliberate. Profitability is the most directly actionable metric for studio
+decision-makers at the greenlight stage, and it can be measured objectively and
+consistently across productions in a way that critical or awards-based success cannot.
 
-**RQ2 — Do prediction models stay accurate as the industry changes?** A model trained
-on historical box-office data may not work well in a world shaped by streaming,
-franchise dominance, or a global pandemic. We test this by training the model on
-progressively older data and measuring how well it predicts each new year — revealing
-which periods (such as 2020) caused the model to break down and whether it recovers.
+Two structural challenges make this prediction problem particularly difficult. The
+first is an **information timing problem**. The strongest observable predictors of
+a film's financial success — audience ratings, popularity scores, and critical reviews
+— only materialise after the film has already been released. A studio deciding whether
+to greenlight a production must rely on a much thinner set of signals: budget, genre,
+cast size, release timing, and distribution strategy. Whether these pre-release
+features alone carry enough predictive signal to support reliable decision-making
+remains an open empirical question.
+
+The second challenge is **industry instability**. A model trained on historical
+box-office data implicitly assumes that the economic patterns governing film
+profitability are stable over time. This assumption has been increasingly strained.
+The rise of the Marvel Cinematic Universe reshaped audience expectations and
+competitive dynamics after 2012, the proliferation of streaming platforms disrupted
+theatrical economics from 2015 onward, and the COVID-19 pandemic caused a
+near-complete collapse of theatrical releases in 2020. A predictive model that
+performs well on pre-2019 data may be entirely uninformative — or even misleading —
+when applied to a world reshaped by these structural breaks.
+
+Motivated by these two challenges, this study evaluates the effectiveness and
+resilience of machine learning models in predicting film profitability. Machine
+learning methods are particularly well-suited to this problem: they can capture
+non-linear relationships between features, handle interactions among many variables
+simultaneously, and be evaluated in ways that directly simulate real-world deployment
+conditions. Three classifier families are compared — Logistic Regression, Random
+Forest, and Gradient Boosting — and assessed under both standard and temporally
+realistic evaluation protocols. The study addresses two core research questions:
+
+**RQ1 — To what extent does restricting predictors to pre-release information reduce
+the accuracy of film profitability prediction models?**
+
+**RQ2 — How robust are film profitability prediction models over time when applied
+to changing industry conditions?**
 
 # 2 Literature Review
 
@@ -161,23 +201,6 @@ display(pd.DataFrame({
     'Share (%)':  [round(matched/total_before*100, 1),
                    round((total_before - matched)/total_before*100, 1), 100.0]
 }))
-
-# ── Match-rate bar chart ───────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(6, 3))
-ax.bar(['IMDb matched\n(retained)', 'No IMDb match\n(dropped)'],
-       [matched, total_before - matched],
-       color=['#4e79a7', '#e15759'], width=0.4,
-       edgecolor='white', linewidth=1.5)
-for rect, val in zip(ax.patches, [matched, total_before - matched]):
-    ax.text(rect.get_x() + rect.get_width()/2,
-            rect.get_height() + 4000,
-            f'{val:,}\n({val/total_before*100:.1f}%)',
-            ha='center', va='bottom', fontsize=10)
-ax.set_ylabel('Number of records')
-ax.set_title('IMDb enrichment match rate (full TMDB dataset)', pad=10)
-ax.set_ylim(0, max(matched, total_before - matched) * 1.2)
-plt.tight_layout()
-plt.show()
 ```
 
 The analysis is restricted to the `{python} f"{matched:,}"` TMDB records that have a
@@ -338,78 +361,121 @@ instance, returned approximately 400× its production budget and represents an e
 upper bound; retaining values above this threshold would introduce severe right-skew
 into the target variable distribution.
 
-We apply filters sequentially, tracking the count after each step.
+Before applying any additional filters, we run a structured audit across every column
+used in the model — checking for missing values, impossible numeric ranges, and empty
+string fields that would silently produce incorrect derived features.
 
 ```{python}
-# ── Sequential cleaning filters with count tracking ───────────────────────────
-# Step 1: micro-budget removal
+# ── Apply micro-budget and ROI filters first ───────────────────────────────────
 df_model = df_clean[df_clean['budget'] >= 10_000].copy()
 _n_after_budget = len(df_model)
-
-# Step 2: ROI outlier removal
 df_model = df_model[df_model['roi'] <= 500].copy()
 _n_after_roi = len(df_model)
 
-# ── Data quality audit on all modelling columns ────────────────────────────────
-_audit_cols = {
-    'runtime':       ('min feature film length',   40,    360),
-    'vote_average':  ('TMDB rating range',          0.1,   10),
-    'vote_count':    ('minimum votes for reliability', 10, None),
-    'Rating':        ('IMDb rating range',           1,    10),
-    'popularity':    ('must be positive',            0.01, None),
-}
+# Extract release year before auditing (feature engineering does this later too)
+df_model['_release_year'] = pd.to_datetime(
+    df_model['release_date'], errors='coerce').dt.year
 
-_audit_rows = []
-for col, (desc, lo, hi) in _audit_cols.items():
-    if col not in df_model.columns:
-        continue
-    n_nan  = df_model[col].isna().sum()
-    n_lo   = (df_model[col] < lo).sum() if lo is not None else 0
-    n_hi   = (df_model[col] > hi).sum() if hi is not None else 0
-    _audit_rows.append({
-        'Column': col, 'Check': desc,
-        'NaN': n_nan, 'Below threshold': n_lo, 'Above threshold': n_hi,
-        'Total flagged': n_nan + n_lo + n_hi
+# ── Audit: numeric columns ─────────────────────────────────────────────────────
+_num_checks = [
+    ('budget',         'Production budget ($)',       10_000, None, 'drop'),
+    ('revenue',        'Box-office revenue ($)',       1,      None, 'drop'),
+    ('runtime',        'Film length (min)',            40,     360,  'drop'),
+    ('vote_average',   'TMDB audience rating (0–10)', 0.1,    10,   'drop'),
+    ('vote_count',     'TMDB number of votes',        10,     None, 'drop'),
+    ('Rating',         'IMDb rating (1–10)',           1,      10,   'drop'),
+    ('popularity',     'TMDB popularity score',       0.01,   None, 'drop'),
+    ('_release_year',  'Release year (1960–2024)',     1960,   2024, 'drop'),
+]
+
+_audit = []
+for col, label, lo, hi, action_type in _num_checks:
+    s = df_model[col]
+    s_cmp = pd.to_numeric(s, errors='coerce')  # coerce strings (e.g. Total_Gross) for comparison
+    n_nan = int(s_cmp.isna().sum())
+    n_lo  = int((s_cmp < lo).sum())       if lo is not None else 0
+    n_hi  = int((s_cmp > hi).sum())       if hi is not None else 0
+    _audit.append({
+        'Column': col.lstrip('_'), 'Valid range': f'{lo} – {hi if hi else "∞"}',
+        'NaN': n_nan, 'Out of range': n_lo + n_hi,
+        'Action': action_type if (n_nan + n_lo + n_hi) > 0 else 'pass ✓'
     })
-display(pd.DataFrame(_audit_rows))
 
-# ── Apply quality filters ──────────────────────────────────────────────────────
-# Runtime: feature films are conventionally ≥ 40 min
-df_model = df_model[df_model['runtime'] >= 40].copy()
-_n_after_runtime = len(df_model)
+# ── Audit: string columns used in feature engineering ─────────────────────────
+_str_checks = [
+    ('genres',               'Genre indicators, n_genres'),
+    ('production_companies', 'Major studio flag, n_prod_cos'),
+    ('credits',              'Cast size (n_cast)'),
+    ('original_language',    'English-language flag'),
+    ('Director',             'Director name (categorical)'),
+]
+for col, usage in _str_checks:
+    s = df_model[col]
+    n_nan   = int(s.isna().sum())
+    n_empty = int((s.str.strip() == '').sum()) if n_nan < len(df_model) else 0
+    _audit.append({
+        'Column': col, 'Valid range': f'used for: {usage}',
+        'NaN': n_nan, 'Out of range': n_empty,
+        'Action': 'fill default' if (n_nan + n_empty) > 0 else 'pass ✓'
+    })
 
-# IMDb Rating: valid range 1–10
-df_model = df_model[df_model['Rating'].between(1, 10)].copy()
-_n_after_rating = len(df_model)
-
-# TMDB vote_average: must be > 0 (0 means no audience votes recorded)
-df_model = df_model[df_model['vote_average'] > 0].copy()
-_n_after_vote_avg = len(df_model)
-
-# TMDB vote_count: require ≥ 10 votes for a reliable vote_average
-df_model = df_model[df_model['vote_count'] >= 10].copy()
-_n_after_vote_cnt = len(df_model)
-
-# Duplicates: drop films with identical title + release_date
-df_model = df_model.drop_duplicates(subset=['title', 'release_date']).copy()
-_n_final = len(df_model)
-
-print(f"\nAfter budget ≥ $10k:          {_n_after_budget:,}")
-print(f"After ROI ≤ 500:              {_n_after_roi:,}")
-print(f"After runtime ≥ 40 min:       {_n_after_runtime:,}  (−{_n_after_roi    - _n_after_runtime:,})")
-print(f"After IMDb rating in [1,10]:  {_n_after_rating:,}  (−{_n_after_runtime - _n_after_rating:,})")
-print(f"After vote_average > 0:       {_n_after_vote_avg:,}  (−{_n_after_rating  - _n_after_vote_avg:,})")
-print(f"After vote_count ≥ 10:        {_n_after_vote_cnt:,}  (−{_n_after_vote_avg - _n_after_vote_cnt:,})")
-print(f"After deduplication:          {_n_final:,}  (−{_n_after_vote_cnt - _n_final:,})")
+display(pd.DataFrame(_audit))
 ```
 
-The data quality audit surfaces any remaining implausible values across all columns
-used in modelling. Runtimes below 40 minutes are below the conventional feature-film
-threshold; IMDb ratings outside 1–10 and TMDB vote averages of exactly zero indicate
-missing or malformed records; and films with fewer than 10 votes produce unreliable
-audience sentiment signals. All flagged records are dropped before finalising the sample.
+String columns with missing values are handled in feature engineering by defaulting to
+`'Unknown'` for genre and zero for counts — no rows are dropped for these. For numeric
+columns flagged above, records are removed sequentially:
+
+```{python}
+# ── Apply numeric quality filters and track counts ─────────────────────────────
+_filters = [
+    ('runtime ∈ [40, 360] min',     lambda d: (d['runtime'] >= 40) & (d['runtime'] <= 360)),
+    ('IMDb rating ∈ [1, 10]',       lambda d: d['Rating'].between(1, 10)),
+    ('vote_average > 0',            lambda d: d['vote_average'] > 0),
+    ('vote_count ≥ 10',             lambda d: d['vote_count'] >= 10),
+    ('popularity > 0',              lambda d: d['popularity'] > 0),
+    ('release year ∈ [1960, 2024]', lambda d: d['_release_year'].between(1960, 2024)),
+    ('no duplicate title+date',     lambda d: ~d.duplicated(subset=['title', 'release_date'])),
+]
+
+_filter_log = []
+_prev = _n_after_roi
+for label, mask_fn in _filters:
+    df_model = df_model[mask_fn(df_model)].copy()
+    _cur = len(df_model)
+    _filter_log.append({'Filter': label, 'Removed': _prev - _cur, 'Remaining': _cur})
+    _prev = _cur
+
+_n_after_runtime    = _filter_log[0]['Remaining']
+_n_after_rating     = _filter_log[1]['Remaining']
+_n_after_vote_avg   = _filter_log[2]['Remaining']
+_n_after_vote_cnt   = _filter_log[3]['Remaining']
+_n_after_popularity = _filter_log[4]['Remaining']
+_n_after_year       = _filter_log[5]['Remaining']
+_n_final            = _filter_log[6]['Remaining']
+
+df_model = df_model.drop(columns=['_release_year'])
+display(pd.DataFrame(_filter_log))
+
+# Fill missing Director; drop Total_Gross (too sparse — see note below)
+df_model['Director'] = df_model['Director'].fillna('Unknown')
+df_model.drop(columns=['Total_Gross'], inplace=True)
+```
 
 The filters leave an analytical sample of `{python} f"{_n_final:,}"` films.
+
+**A note on `Total_Gross`.** The IMDb enrichment dataset includes a `Total_Gross` field
+reporting box-office receipts, but inspection shows a large share of matched records
+carry no value for this field — IMDb does not publish gross figures for all titles in
+its catalogue, particularly older or smaller-scale releases. Imputing such a high
+proportion of missing values would introduce substantial noise, and dropping only the
+rows with a valid `Total_Gross` would bias the retained sample towards well-documented
+studio releases. The column is therefore excluded from the analytical dataset entirely.
+This has no impact on our research: the financial outcome of interest is TMDb's
+`revenue` field (used to compute ROI and the profitability target), which is fully
+observed for all retained rows. `Total_Gross` would not have been used as a model
+feature in any case, as including a second revenue proxy would introduce near-perfect
+collinearity with the target variable.
 
 ### 3.3.4 Final Sample and Cleaning Summary
 
@@ -505,18 +571,20 @@ following section.
 ```{python}
 # ── Dynamic cleaning funnel table ──────────────────────────────────────────────
 _steps = [
-    ('Raw TMDB dataset',              '—',                          None,               _n_raw),
-    ('Keep IMDb-matched only',        'Rating is NaN',              _n_raw,             _n_matched),
-    ('Remove zero/missing budget',    'budget = 0 or NaN',          _n_matched,         _n_budget_pos),
-    ('Remove zero/missing revenue',   'revenue = 0 or NaN',         _n_budget_pos,      _n_revenue_pos),
-    ('Remove zero/missing runtime',   'runtime = 0 or NaN',         _n_revenue_pos,     _n_runtime_pos),
-    ('Remove micro-budgets',          'budget < $10,000',           _n_runtime_pos,     _n_after_budget),
-    ('Remove ROI outliers',           'ROI > 500',                  _n_after_budget,    _n_after_roi),
-    ('Remove short films',            'runtime < 40 min',           _n_after_roi,       _n_after_runtime),
-    ('Remove bad IMDb ratings',       'Rating outside [1, 10]',     _n_after_runtime,   _n_after_rating),
-    ('Remove unrated films',          'vote_average = 0',           _n_after_rating,    _n_after_vote_avg),
-    ('Remove low-vote films',         'vote_count < 10',            _n_after_vote_avg,  _n_after_vote_cnt),
-    ('Remove duplicates',             'same title + release date',  _n_after_vote_cnt,  _n_final),
+    ('Raw TMDB dataset',              '—',                               None,                 _n_raw),
+    ('Keep IMDb-matched only',        'Rating is NaN',                   _n_raw,               _n_matched),
+    ('Remove zero/missing budget',    'budget = 0 or NaN',               _n_matched,           _n_budget_pos),
+    ('Remove zero/missing revenue',   'revenue = 0 or NaN',              _n_budget_pos,        _n_revenue_pos),
+    ('Remove zero/missing runtime',   'runtime = 0 or NaN',              _n_revenue_pos,       _n_runtime_pos),
+    ('Remove micro-budgets',          'budget < $10,000',                _n_runtime_pos,       _n_after_budget),
+    ('Remove ROI outliers',           'ROI > 500',                       _n_after_budget,      _n_after_roi),
+    ('Remove implausible runtime',    'runtime < 40 or > 360 min',       _n_after_roi,         _n_after_runtime),
+    ('Remove bad IMDb ratings',       'Rating outside [1, 10]',          _n_after_runtime,     _n_after_rating),
+    ('Remove unrated films',          'vote_average = 0',                _n_after_rating,      _n_after_vote_avg),
+    ('Remove low-vote films',         'vote_count < 10',                 _n_after_vote_avg,    _n_after_vote_cnt),
+    ('Remove zero-popularity films',  'popularity = 0',                  _n_after_vote_cnt,    _n_after_popularity),
+    ('Remove implausible years',      'release year outside 1960–2024',  _n_after_popularity,  _n_after_year),
+    ('Remove duplicates',             'same title + release date',       _n_after_year,        _n_final),
 ]
 
 _funnel = pd.DataFrame([
@@ -713,7 +781,38 @@ print(f"Feature matrix : {X.shape[0]:,} rows × {X.shape[1]} features")
 print(f"Class balance  : {y.mean()*100:.1f}% profitable  /  {(1-y.mean())*100:.1f}% not profitable")
 ```
 
-### Exploratory feature analysis
+The table below summarises all derived features that enter the modelling stage.
+
+| Feature | Type | Source |
+|---|---|---|
+| `log_budget` | Numeric | TMDB budget |
+| `runtime` | Numeric | TMDB |
+| `release_year` | Numeric | TMDB release\_date |
+| `release_month` | Numeric (1–12) | TMDB release\_date |
+| `is_summer` | Binary | Derived (Jun–Jul) |
+| `is_holiday` | Binary | Derived (Nov–Dec) |
+| `n_genres` | Count | TMDB genres |
+| `is_english` | Binary | TMDB original\_language |
+| `n_prod_cos` | Count | TMDB production\_companies |
+| `is_major_studio` | Binary | TMDB production\_companies |
+| `n_cast` | Count | TMDB credits |
+| `log_popularity` | Numeric | TMDB popularity |
+| `log_vote_count` | Numeric | TMDB vote\_count |
+| `vote_average` | Numeric (0–10) | TMDB |
+| `imdb_rating` | Numeric (0–10) | IMDb (observed) |
+| `genre_*` (×10) | Binary | TMDB genres one-hot |
+
+: Feature overview {tbl-colwidths="[28,20,52]"}
+
+# 4 Exploratory Data Analysis
+
+Before fitting any model, we examine the structure of the analytical sample to
+understand the distribution of the target variable, identify which film characteristics
+are most strongly associated with profitability, and detect temporal patterns that
+may affect model generalisability. These observations directly motivate several
+modelling choices described in Section 5.
+
+## 4.1 Profitability by Genre and Budget Tier
 
 ```{python}
 # ── Plot 1: Profitability rate by primary genre ────────────────────────────────
@@ -785,43 +884,58 @@ of outright failure. Mid-tier productions (\$10M–\$50M) occupy the most compet
 and uncertain position — large enough to require significant marketing spend, but
 without the guaranteed audience scale of a tentpole release.
 
-| Feature | Type | Source |
-|---|---|---|
-| `log_budget` | Numeric | TMDB budget |
-| `runtime` | Numeric | TMDB |
-| `release_year` | Numeric | TMDB release\_date |
-| `release_month` | Numeric (1–12) | TMDB release\_date |
-| `is_summer` | Binary | Derived (Jun–Jul) |
-| `is_holiday` | Binary | Derived (Nov–Dec) |
-| `n_genres` | Count | TMDB genres |
-| `is_english` | Binary | TMDB original\_language |
-| `n_prod_cos` | Count | TMDB production\_companies |
-| `is_major_studio` | Binary | TMDB production\_companies |
-| `n_cast` | Count | TMDB credits |
-| `log_popularity` | Numeric | TMDB popularity |
-| `log_vote_count` | Numeric | TMDB vote\_count |
-| `vote_average` | Numeric (0–10) | TMDB |
-| `imdb_rating` | Numeric (0–10) | IMDb (observed) |
-| `genre_*` (×10) | Binary | TMDB genres one-hot |
+# 5 Methodology
 
-: Feature overview {tbl-colwidths="[28,20,52]"}
+## 5.1 Supervised Learning Setup
 
-# 4 Methodology
+Three classifier families are trained and compared, chosen to span the spectrum from
+interpretable linear models to flexible ensemble methods.
 
-## 4.1 Training Protocol
+**Logistic Regression** serves as the linear baseline. All features are standardised
+before fitting. Despite its simplicity, it provides directly interpretable coefficient
+estimates and a useful lower bound on achievable AUC.
 
-Three classifier families are trained and compared. **Logistic Regression** serves as
-the linear baseline and provides interpretable coefficient-level insights.
-**Random Forest** captures non-linear feature interactions and yields mean-decrease
-impurity importance scores. **Gradient Boosting (XGBoost)** applies sequential
-residual correction and represents the current state of the art for tabular
-classification tasks.
+**Random Forest** captures non-linear feature interactions through an ensemble of
+decorrelated decision trees. It is robust to irrelevant features and yields
+mean-decrease impurity importance scores that complement SHAP analysis.
 
-The primary evaluation metric is **ROC-AUC**, chosen because it is
-threshold-independent and robust to the mild class imbalance (65.7/34.3). Accuracy,
-Precision, Recall, and F1-score (weighted) are reported for completeness.
-All models are evaluated on a held-out test set that was never used during training or
-hyperparameter selection.
+**Gradient Boosting (HistGradientBoosting)** applies sequential residual correction
+and represents the current state of the art for tabular classification. It handles
+missing values natively and is well-suited to datasets with mixed numeric and binary
+features.
+
+The choice to include all three families is deliberate: logistic regression tests
+whether the profitability signal is linearly separable; if the ensemble models
+substantially outperform it, that implies important non-linear or interaction effects
+that a studio decision tool should capture.
+
+## 5.2 Evaluation Metrics
+
+The primary evaluation metric is **ROC-AUC** (Area Under the Receiver Operating
+Characteristic Curve). It is chosen because it is threshold-independent — measuring
+discriminative power across all classification thresholds simultaneously — and robust
+to the mild class imbalance (~65/35). A studio using the model as a screening tool
+cares about *ranking* films by profitability likelihood, not just binary classification
+at a fixed threshold, which ROC-AUC directly measures.
+
+For completeness, **accuracy**, **precision**, **recall**, and weighted **F1-score**
+are also reported. Precision and recall are particularly informative in the imbalanced
+setting: precision captures how often the model's "profitable" predictions are correct,
+while recall captures how many truly profitable films it identifies.
+
+## 5.3 Data Splitting Strategy
+
+An 80/20 stratified random split separates training and test sets, with stratification
+on the target variable to preserve class balance in both partitions. Standardisation
+is fitted on the training set only and applied to the test set, preventing information
+leakage from test-set statistics. All reported metrics are computed on the held-out
+test set, which is never used during training or hyperparameter selection.
+
+For the temporal robustness analysis (RQ2), a separate **expanding-window
+walk-forward** procedure is used: the model is trained on all films released before
+year T and tested on films from year T, iterating T from 2005 to 2022. This directly
+measures how well patterns learned from historical data transfer to future years under
+genuine distribution shift.
 
 ```{python}
 from sklearn.model_selection import train_test_split
@@ -842,9 +956,27 @@ display(pd.DataFrame({
 }))
 ```
 
-# 5 Models
+## 5.4 Hyperparameter Tuning
 
-## 5.1 Logistic Regression
+For the two strongest baseline models (Random Forest and Gradient Boosting),
+`RandomizedSearchCV` with 5-fold stratified cross-validation is applied over a
+predefined search space. The parameter combination that maximises mean
+cross-validated ROC-AUC on the training set is selected. Full search results are
+reported alongside the model comparison in Section 7.1.
+
+## 5.5 Model Interpretation
+
+Two complementary approaches are used to interpret the best-performing model.
+**Mean Decrease in Impurity (MDI)** importance, computed from the Random Forest,
+measures average feature usage across trees but can overstate the contribution of
+high-cardinality continuous variables. **SHAP (SHapley Additive exPlanations)**
+values provide a model-agnostic alternative: each feature's marginal contribution to
+every individual prediction is computed and averaged across the test set, yielding
+both magnitude and direction of effect. SHAP results are reported in Section 7.4.
+
+# 6 Model Training
+
+## 6.1 Logistic Regression
 
 Logistic Regression provides the linear baseline. All features are standardised before
 fitting to ensure coefficients are on a comparable scale and convergence is well-behaved.
@@ -886,7 +1018,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-## 5.2 Random Forest
+## 6.2 Random Forest
 
 The Random Forest is trained on unscaled features; tree-based models are invariant to
 monotone feature transformations. Five-fold cross-validation on the training set
@@ -929,7 +1061,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-## 5.3 Gradient Boosting
+## 6.3 Gradient Boosting
 
 Scikit-learn's `HistGradientBoostingClassifier` applies histogram-based gradient
 boosting (the same algorithmic family as LightGBM), sequentially correcting residual
@@ -974,8 +1106,8 @@ plt.tight_layout()
 plt.show()
 ```
 
-# 6 Results
-## 6.1 Model Comparison
+# 7 Results
+## 7.1 Model Comparison
 
 ```{python}
 # ── Metrics table ──────────────────────────────────────────────────────────────
@@ -1026,7 +1158,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-## 6.2 Hyperparameter Tuning
+## 7.2 Hyperparameter Tuning
 
 The baseline models used default or manually selected hyperparameters. Here we apply
 `RandomizedSearchCV` with 5-fold stratified cross-validation to find better
@@ -1115,7 +1247,7 @@ ax.legend(fontsize=9)
 plt.tight_layout(); plt.show()
 ```
 
-## 6.3 Pre-Release Scenario Analysis
+## 7.3 Pre-Release Scenario Analysis (RQ1)
 
 All features used so far include post-release signals such as `vote_average`,
 `log_popularity`, and `log_vote_count` — metrics that accumulate after a film is
@@ -1177,7 +1309,7 @@ post-release audience signals. The pre-release AUC represents the performance a 
 could realistically achieve at greenlight time — a meaningful benchmark for any
 practical decision-support application.
 
-## 6.4 Feature Contributions (SHAP)
+## 7.4 Feature Contributions and Interpretation (SHAP)
 
 Mean Decrease Impurity (MDI) importance — used in Section 5.2 — measures average
 feature usage across trees but can overstate the importance of high-cardinality
@@ -1239,7 +1371,7 @@ available at greenlight time. Section 5.6 quantified the cost of removing them
 `{python} f"{auc_pre:.3f}"`). The SHAP plot shows *why*: those features produce the
 largest, most consistent pushes in the model's predictions.
 
-## 6.5 Information-Value Heterogeneity: Pre-Release Gap by Genre and Budget Tier
+## 7.5 Pre-Release Information Gap by Genre and Budget Tier
 
 The aggregate AUC gap reported in Section 6.3 masks important heterogeneity. A studio
 greenlighting a Horror film faces a very different information environment than one
@@ -1390,7 +1522,7 @@ conventions). Large-budget blockbusters (>\$100M, Δ = 0.081) also show modest g
 suggesting that at sufficient scale, franchise and distribution advantages dominate
 audience response noise.
 
-## 6.6 Temporal Generalization: Walk-Forward Evaluation
+## 7.6 Temporal Generalisation: Walk-Forward Evaluation (RQ2)
 
 The random 80/20 train/test split used throughout this study treats time as an
 i.i.d. dimension — a standard assumption that may not hold for film profitability. The
@@ -1523,9 +1655,58 @@ threat to film profitability models: static random-split evaluation would concea
 walk-forward design is therefore the methodologically appropriate evaluation framework
 for any practical greenlight decision tool.
 
-# 7 Discussion
-
 # 8 Conclusion
+
+## 8.1 Limitations
+
+Several limitations bound the conclusions of this study.
+
+**Missing data and sample selection bias.** The analytical sample retains only films
+with complete, positive financial records in both TMDb and IMDb — roughly 1.5% of
+the raw TMDb catalogue. These are disproportionately studio-backed, wide-release
+productions. Independent films, foreign-language releases, and direct-to-streaming
+titles are substantially under-represented, so predictions should not be extrapolated
+beyond commercially distributed theatrical releases.
+
+**Simplified target definition.** The ROI > 1 break-even threshold ignores marketing
+and distribution costs, which can equal or exceed the production budget for wide
+releases. A film classified as "profitable" here may still represent a net loss once
+all expenditures are included. A more complete profitability measure would require
+marketing spend data that is not publicly available at scale.
+
+**Limits of theatrical revenue data.** The dataset captures box-office gross only.
+Home video, streaming rights, merchandise, and ancillary revenues are not reflected,
+meaning the true financial outcome for many films — particularly franchise
+instalments — is systematically understated.
+
+**Static feature representations.** Features such as cast size and production company
+count are derived from raw count strings without weighting for star power, franchise
+IP, or distributor strength. Richer representations (e.g., actor-level fame scores,
+sequel indicators) could improve pre-release prediction but require additional data
+sources.
+
+## 8.2 Discussion
+
+The results of this study yield two main practical conclusions for studio
+decision-making.
+
+**Pre-release prediction is useful but imperfect.** The pre-release model (Section
+8.3) achieves a meaningful AUC, demonstrating that budget scale, genre, studio
+involvement, and release timing collectively contain genuine signal about
+profitability outcomes — even before any audience feedback exists. However, the gap
+relative to the full model quantifies the irreducible uncertainty a studio faces at
+greenlight time: a substantial portion of the profitability signal comes from
+post-release audience reception, which cannot be known in advance. The practical
+implication is that a pre-release screening tool can improve the hit rate of greenlight
+decisions, but cannot eliminate the inherent risk.
+
+**Temporal instability is a first-order concern for deployed models.** The
+walk-forward evaluation (Section 8.6) shows that static random-split AUC estimates
+can be misleading: a model that appears robust in held-out evaluation may collapse
+entirely when faced with a structural break such as the 2020 theatrical shutdown.
+Studios should treat model performance estimates as conditional on the stability of
+the industry environment in which the model was trained — and should re-evaluate and
+re-train regularly, particularly following major market disruptions.
 
 # 9 References
 
